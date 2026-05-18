@@ -40,6 +40,13 @@ def embed_query(query: str) -> list[float]:
     return embed_texts([query])[0]
 
 
+class LocalEmbeddingFunction:
+    """Chroma embedding function backed by the local sentence-transformers model."""
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        return embed_texts(list(input))
+
+
 class VectorStore:
     """ChromaDB vector store for RAG chunks."""
     

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import chromadb
 from chromadb.config import Settings
-from fastapi import UploadFile
 
 from app.config import CHROMA_DIR, COLLECTION_NAME, UPLOAD_DIR
 from app.rag.embeddings import LocalEmbeddingFunction
-from app.rag.pdf_loader import build_chunks
-from app.utils.file_utils import file_hash
+from app.rag.types import Chunk
 
 
 def get_collection():
@@ -33,35 +31,13 @@ def indexed_file_hashes() -> set[str]:
     return hashes
 
 
-async def index_pdf_uploads(files: list[UploadFile]) -> tuple[int, list[str]]:
-    collection = get_collection()
-    known_hashes = indexed_file_hashes()
-    added_chunks = 0
-    messages: list[str] = []
+def add_chunks(chunks: list[Chunk]) -> int:
+    if not chunks:
+        return 0
 
-    for uploaded_file in files:
-        data = await uploaded_file.read()
-        digest = file_hash(data)
-        file_name = uploaded_file.filename or "uploaded.pdf"
-        target = UPLOAD_DIR / file_name
-        target.write_bytes(data)
-
-        if digest in known_hashes:
-            messages.append(f"{file_name}: bereits indexiert")
-            continue
-
-        chunks = build_chunks(file_name, digest, target)
-        if not chunks:
-            messages.append(f"{file_name}: kein extrahierbarer Text gefunden")
-            continue
-
-        collection.add(
-            ids=[chunk.id for chunk in chunks],
-            documents=[chunk.text for chunk in chunks],
-            metadatas=[chunk.metadata for chunk in chunks],
-        )
-        added_chunks += len(chunks)
-        known_hashes.add(digest)
-        messages.append(f"{file_name}: {len(chunks)} Textabschnitte indexiert")
-
-    return added_chunks, messages
+    get_collection().upsert(
+        ids=[chunk.id for chunk in chunks],
+        documents=[chunk.text for chunk in chunks],
+        metadatas=[chunk.metadata for chunk in chunks],
+    )
+    return len(chunks)
