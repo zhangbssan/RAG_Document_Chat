@@ -4,4 +4,5 @@ python-multipart==0.0.20
 chromadb==1.0.10
 sentence-transformers==4.1.0
 pypdf==5.5.0
+pymupdf==1.24.8
 openai==1.82.0

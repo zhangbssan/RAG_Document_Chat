@@ -10,3 +10,4 @@ backend/data/uploads/*
 backend/data/chroma/*
 !backend/data/uploads/.gitkeep
 !backend/data/chroma/.gitkeep
+sample_docs/

@@ -1,38 +1,65 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import sys
 from pathlib import Path
 
-from pypdf import PdfReader
-
-from app.rag.chunker import chunk_text, normalize_text
-#PyMuPDF 关键点：按页解析，因为 source citation 要 page number。
-
-@dataclass(frozen=True)
-class Chunk:
-    id: str
-    text: str
-    metadata: dict[str, str | int]
+import fitz
+# Add backend directory to Python path if running directly
+# _backend_dir = Path(__file__).resolve().parents[2]
+# if str(_backend_dir) not in sys.path:
+#     sys.path.insert(0, str(_backend_dir))
+from app.schemas import PageText
 
 
-def build_chunks(file_name: str, file_digest: str, pdf_path: Path) -> list[Chunk]:
-    reader = PdfReader(str(pdf_path))
-    chunks: list[Chunk] = []
 
-    for page_index, page in enumerate(reader.pages, start=1):
-        page_text = normalize_text(page.extract_text() or "")
-        for chunk_index, text in enumerate(chunk_text(page_text), start=1):
-            chunks.append(
-                Chunk(
-                    id=f"{file_digest}:{page_index}:{chunk_index}",
-                    text=text,
-                    metadata={
-                        "document": file_name,
-                        "file_hash": file_digest,
-                        "page": page_index,
-                        "chunk": chunk_index,
-                    },
+# PyMuPDF (fitz) key points:
+# - Extract text content from PDF for further processing
+
+
+def pdf_extraction(file_name: str, pdf_path: Path) -> list[PageText]:
+    """
+    Extract text content from PDF by page.
+    
+    Args:
+        file_name: Name of the PDF file
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        List of PageText objects containing extracted page content
+    """
+    pages: list[PageText] = []
+    
+    try:
+        # Calculate file hash
+        file_digest = hashlib.md5(pdf_path.read_bytes()).hexdigest()
+        
+        # Open PDF document using PyMuPDF
+        pdf_document = fitz.open(str(pdf_path))
+        total_pages = pdf_document.page_count
+        
+        for page_index in range(total_pages):
+            # Get page (0-indexed, but we use 1-indexed for display)
+            page = pdf_document[page_index]
+            page_number = page_index + 1
+            
+            # Extract text from page
+            page_text = page.get_text()
+            
+            # Skip empty pages
+            if page_text and page_text.strip():
+                pages.append(
+                    PageText(
+                        document_name=file_name,
+                        file_hash=file_digest,
+                        page=page_number,
+                        text=page_text,
+                    )
                 )
-            )
-
-    return chunks
+        
+        pdf_document.close()
+        
+    except Exception as e:
+        raise ValueError(f"Error processing PDF '{file_name}': {str(e)}") from e
+    
+    return pages
