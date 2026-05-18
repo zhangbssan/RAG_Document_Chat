@@ -30,8 +30,4 @@ class DocumentStats(BaseModel):
     chunk_count: int
 
 
-class PageText(BaseModel):
-    document_name: str
-    file_hash: str
-    page: int
-    text: str
+

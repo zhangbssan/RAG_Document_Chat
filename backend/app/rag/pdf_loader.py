@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import sys
 from pathlib import Path
 
 import fitz
-# Add backend directory to Python path if running directly
-# _backend_dir = Path(__file__).resolve().parents[2]
-# if str(_backend_dir) not in sys.path:
-#     sys.path.insert(0, str(_backend_dir))
-from app.schemas import PageText
+
+from app.rag.types import PageText
 
 
 

@@ -14,7 +14,7 @@ if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
 from app.rag.pdf_loader import pdf_extraction
-from app.schemas import PageText
+# from app.rag.types import PageText
 
 
 def validate_pagetext_extraction():
