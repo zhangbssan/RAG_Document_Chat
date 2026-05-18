@@ -2,29 +2,52 @@ from __future__ import annotations
 
 from app.config import TOP_K
 from app.schemas import Source
-from app.rag.vector_store import get_collection
+from app.rag.embeddings import VectorStore, embed_query
+
+
+# Global vector store instance
+_vector_store: VectorStore | None = None
+
+
+def get_vector_store() -> VectorStore:
+    """Get or create the global vector store instance."""
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = VectorStore()
+    return _vector_store
+
+
+def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[dict]:
+    """
+    Retrieve similar chunks from the vector store.
+    
+    Args:
+        query: User query string
+        top_k: Number of chunks to retrieve
+        
+    Returns:
+        List of retrieved chunks with metadata and scores
+    """
+    vector_store = get_vector_store()
+    retrieved = vector_store.query_chunks(query, top_k=top_k)
+    return retrieved
 
 
 def search_sources(question: str, top_k: int = TOP_K) -> list[Source]:
-    collection = get_collection()
-    if collection.count() == 0:
-        return []
-
-    result = collection.query(query_texts=[question], n_results=top_k)
+    """Search and return sources (for backward compatibility)."""
+    retrieved = retrieve_chunks(question, top_k=top_k)
+    
     sources: list[Source] = []
-    documents = result.get("documents", [[]])[0]
-    metadatas = result.get("metadatas", [[]])[0]
-    distances = result.get("distances", [[]])[0]
-
-    for text, metadata, distance in zip(documents, metadatas, distances):
+    for chunk in retrieved:
+        metadata = chunk.get("metadata", {})
         sources.append(
             Source(
-                text=text,
-                document=metadata.get("document", "Unbekannt"),
+                text=chunk.get("text", ""),
+                document=metadata.get("document_name", "Unknown"),
                 page=metadata.get("page", "?"),
-                chunk=metadata.get("chunk", "?"),
-                score=1 - float(distance) if distance is not None else None,
+                chunk=metadata.get("chunk_index", "?"),
+                score=chunk.get("score"),
             )
         )
-
+    
     return sources
