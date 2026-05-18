@@ -6,7 +6,7 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from app.rag.chunker import chunk_text, normalize_text
-
+#PyMuPDF 关键点：按页解析，因为 source citation 要 page number。
 
 @dataclass(frozen=True)
 class Chunk:

@@ -7,6 +7,12 @@ from app.rag.generator import answer_question
 from app.rag.retriever import search_sources
 from app.schemas import ChatRequest, ChatResponse
 
+# 对应 endpoint：POST /chat
+# 1. 接收用户 question
+# 2. 调用 retriever.retrieve(question)
+# 3. 可选调用 reranker.rerank(question, chunks)
+# 4. 调用 generator.generate_answer(question, chunks)
+# 5. 返回 answer + sources
 
 router = APIRouter()
 

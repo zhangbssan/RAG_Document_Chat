@@ -4,7 +4,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import chat, documents, evaluation, upload
+# for - 创建 FastAPI app
+# - 设置 CORS
+# - 注册 router
+# - 提供 /health endpoint
 
+# GET  /health
+# POST /upload
+# POST /chat
+# GET  /documents
+# POST /evaluate
 
 app = FastAPI(title="RAG Document Chat API")
 

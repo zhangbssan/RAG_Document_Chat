@@ -6,7 +6,9 @@ from openai import OpenAI
 
 from app.config import OPENAI_MODEL
 from app.schemas import Source
-
+# 但是 source 最好不要只靠 LLM 生成。
+# 你后端应该自己返回 sources：
+# how to connect with prompts.py
 
 def format_context(sources: list[Source]) -> str:
     blocks = []
