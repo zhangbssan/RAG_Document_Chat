@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import time
 
 import requests
 import streamlit as st
@@ -9,17 +11,31 @@ import streamlit as st
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 
+# ==================== Page Setup ====================
+
+
 def setup_page() -> None:
-    st.set_page_config(page_title="RAG Document Chat", page_icon="PDF", layout="wide")
-    st.title("RAG Document Chat")
-    st.caption("PDFs hochladen, indexieren und mit Quellenangaben durchsuchen.")
+    """Initialize Streamlit page configuration."""
+    st.set_page_config(
+        page_title="RAG Document Chat",
+        page_icon="📚",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    st.title("📚 RAG Document Chat")
+    st.caption("Upload PDFs, chat intelligently with document content, get answers with source citations")
+
+
+# ==================== API Helpers ====================
 
 
 def api_url(path: str) -> str:
+    """Build full API URL."""
     return f"{API_BASE_URL.rstrip('/')}{path}"
 
 
 def upload_pdfs(uploaded_files) -> list[str]:
+    """Upload PDF files to the backend."""
     files = [
         ("files", (uploaded_file.name, uploaded_file.getvalue(), "application/pdf"))
         for uploaded_file in uploaded_files
@@ -29,100 +45,345 @@ def upload_pdfs(uploaded_files) -> list[str]:
     return response.json()["messages"]
 
 
-def get_chunk_count() -> int:
+def get_document_stats() -> dict:
+    """Get document statistics from backend."""
     response = requests.get(api_url("/api/documents/stats"), timeout=30)
-    response.raise_for_status()
-    return int(response.json()["chunk_count"])
-
-
-def ask_question(question: str) -> dict:
-    response = requests.post(api_url("/api/chat"), json={"question": question}, timeout=300)
     response.raise_for_status()
     return response.json()
 
 
+def ask_question(question: str, use_stream: bool = False) -> dict | None:
+    """
+    Ask a question.
+    
+    Args:
+        question: User question
+        use_stream: Whether to use streaming endpoint
+        
+    Returns:
+        Response dict with answer and sources, or None if streaming
+    """
+    if use_stream:
+        return None  # Streaming handled separately
+    
+    response = requests.post(
+        api_url("/api/chat"),
+        json={"question": question},
+        timeout=300
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def run_evaluation() -> dict:
+    """Run backend retrieval evaluation."""
+    response = requests.post(api_url("/api/evaluate"), timeout=300)
+    response.raise_for_status()
+    return response.json()
+
+
+def stream_answer(question: str):
+    """Stream answer chunks from the backend."""
+    try:
+        response = requests.post(
+            api_url("/api/chat/stream"),
+            json={"question": question},
+            timeout=300,
+            stream=True,
+        )
+        response.raise_for_status()
+        
+        sources = []
+        
+        # Parse streaming response
+        for line in response.iter_lines():
+            if not line:
+                continue
+            
+            if line.startswith(b"data: "):
+                try:
+                    data_str = line[6:].decode("utf-8")
+                    data = json.loads(data_str)
+                    
+                    if data.get("type") == "sources":
+                        sources = data.get("data", [])
+                    elif data.get("type") == "content":
+                        yield ("content", data.get("data", ""))
+                    elif data.get("type") == "done":
+                        yield ("done", None)
+                        yield ("sources", sources)
+                
+                except json.JSONDecodeError:
+                    continue
+    
+    except Exception as e:
+        yield ("error", f"Stream processing failed: {str(e)}")
+
+
+# ==================== UI Components ====================
+
+
 def render_sidebar() -> None:
+    """Render sidebar with document management."""
     with st.sidebar:
-        st.header("Dokumente")
+        st.header("📁 Document Management")
+        
+        # Backend connection info
         st.caption(f"Backend: `{API_BASE_URL}`")
+        
+        # File uploader
+        st.subheader("Upload PDF Files")
         uploaded_files = st.file_uploader(
-            "PDFs hochladen",
+            "Select PDF files to upload",
             type=["pdf"],
             accept_multiple_files=True,
+            label_visibility="collapsed",
         )
-
-        if st.button("PDFs indexieren", type="primary", disabled=not uploaded_files):
-            with st.spinner("PDFs werden gelesen, gechunked und eingebettet..."):
+        
+        if st.button(
+            "🚀 Start Indexing",
+            type="primary",
+            disabled=not uploaded_files,
+            use_container_width=True,
+        ):
+            with st.spinner("📖 Processing PDF files..."):
                 try:
-                    for message in upload_pdfs(uploaded_files):
-                        st.write(message)
+                    messages = upload_pdfs(uploaded_files)
+                    for message in messages:
+                        st.success(message)
+                    st.rerun()
                 except Exception as exc:
-                    st.error(f"Indexierung fehlgeschlagen: {exc}")
-
+                    st.error(f"❌ Indexing failed: {exc}")
+        
+        st.divider()
+        
+        # Document statistics
+        st.subheader("📊 Index Statistics")
         try:
-            st.metric("Textabschnitte in ChromaDB", get_chunk_count())
-        except Exception:
-            st.warning("Backend nicht erreichbar.")
-
-        if st.button("Chat leeren"):
+            stats = get_document_stats()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Text Clauses", stats.get("chunk_count", 0))
+            with col2:
+                st.metric("Indexed Documents", stats.get("document_count", 0))
+            
+            # List documents
+            documents = stats.get("documents", [])
+            if documents:
+                st.subheader("Indexed Documents")
+                for doc in documents:
+                    st.caption(f"📄 {doc}")
+            else:
+                st.info("No documents indexed yet")
+        
+        except Exception as e:
+            st.warning(f"⚠️ Failed to get statistics: {e}")
+        
+        st.divider()
+        
+        # Clear chat
+        if st.button("🗑️ Clear Chat", use_container_width=True):
             st.session_state.messages = []
             st.rerun()
+        
+        # About section
+        st.divider()
+        st.markdown(
+            """
+            ### 💡 Instructions
+            
+            1. **Upload Documents**: Select PDF files and click "Start Indexing"
+            2. **Ask Questions**: Enter your question in the input box below
+            3. **View Sources**: Each answer displays referenced documents and page numbers
+            4. **Multi-turn Chat**: You can perform multiple rounds of conversation
+            """
+        )
 
 
-def render_chat() -> None:
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message.get("sources"):
-                render_sources(message["sources"])
-
-    question = st.chat_input("Frage zu den hochgeladenen PDFs stellen")
-    if not question:
-        return
-
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Suche relevante Textabschnitte..."):
-            try:
-                result = ask_question(question)
-                answer = result["answer"]
-                sources = result["sources"]
-            except Exception as exc:
-                answer = f"Antwortgenerierung fehlgeschlagen: {exc}"
-                sources = []
-        st.markdown(answer)
-        render_sources(sources)
-
-    st.session_state.messages.append(
-        {"role": "assistant", "content": answer, "sources": sources}
-    )
-
-
-def render_sources(sources: list[dict]) -> None:
+def render_sources(sources: list[dict], expandable: bool = True) -> None:
+    """Render source citations for an answer."""
     if not sources:
         return
 
-    with st.expander("Quellen anzeigen", expanded=False):
-        for source in sources:
-            score = source.get("score")
-            score_text = f" | Treffer: {score:.2f}" if score is not None else ""
+    if expandable:
+        with st.expander("📖 View Sources", expanded=False):
+            render_source_items(sources)
+    else:
+        render_source_items(sources)
+
+
+def render_source_items(sources: list[dict]) -> None:
+    """Render source rows without adding a wrapper container."""
+    for i, source in enumerate(sources, 1):
+        with st.container():
+            # Source header
+            cols = st.columns([3, 1])
+            with cols[0]:
+                st.markdown(
+                    f"**Source {i}:** {source['document']} | "
+                    f"Page {source['page']} | "
+                    f"Clause {source['chunk']}"
+                )
+            with cols[1]:
+                if source.get("score") is not None:
+                    score = source.get("score", 0) * 100
+                    st.caption(f"Similarity: {score:.0f}%")
+
+            # Source content
             st.markdown(
-                f"**{source['document']}** | Seite {source['page']} | "
-                f"Abschnitt {source['chunk']}{score_text}"
+                f"> {source['text'][:400]}"
+                + ("..." if len(source['text']) > 400 else "")
             )
-            st.write(source["text"])
+            st.divider()
+
+
+def render_chat() -> None:
+    """Render chat interface."""
+    # Initialize session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    # Display chat history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"], avatar="👤" if message["role"] == "user" else "🤖"):
+            st.markdown(message["content"])
+            if message.get("sources"):
+                render_sources(message["sources"])
+    
+    # Chat input
+    if prompt := st.chat_input("💬 Enter your question..."):
+        # Add user message to history
+        st.session_state.messages.append({
+            "role": "user",
+            "content": prompt,
+        })
+        
+        # Display user message
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(prompt)
+        
+        # Generate and display assistant response
+        with st.chat_message("assistant", avatar="🤖"):
+            message_placeholder = st.empty()
+            sources_placeholder = st.empty()
+            
+            try:
+                # Stream the response
+                full_response = ""
+                sources = []
+                
+                with st.spinner("⏳ Thinking..."):
+                    for event_type, event_data in stream_answer(prompt):
+                        if event_type == "content":
+                            full_response += event_data
+                            message_placeholder.markdown(full_response + "▌")
+                        elif event_type == "sources":
+                            sources = event_data
+                        elif event_type == "error":
+                            # Fallback: use regular endpoint if streaming fails
+                            try:
+                                result = ask_question(prompt, use_stream=False)
+                                full_response = result["answer"]
+                                sources = result.get("sources", [])
+                            except Exception as fallback_error:
+                                full_response = f"❌ Error: {event_data}"
+                
+                # Final render without cursor
+                message_placeholder.markdown(full_response)
+                
+                # Display sources if any
+                if sources:
+                    with sources_placeholder:
+                        render_sources(sources)
+                
+                # Add assistant message to history
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": full_response,
+                    "sources": sources,
+                })
+            
+            except Exception as exc:
+                error_message = f"❌ Request processing failed: {str(exc)}"
+                message_placeholder.error(error_message)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_message,
+                    "sources": [],
+                })
+
+
+def render_evaluation_panel() -> None:
+    """Render retrieval evaluation results."""
+    st.subheader("Evaluation Panel")
+    st.caption("Runs the hardcoded backend test cases against retrieved chunks.")
+
+    if st.button("Run Evaluation", type="primary"):
+        with st.spinner("Running evaluation..."):
+            try:
+                evaluation = run_evaluation()
+            except Exception as exc:
+                st.error(f"Evaluation failed: {exc}")
+                return
+
+        if evaluation.get("status") == "error":
+            st.error(evaluation.get("detail", "Evaluation failed."))
+            return
+
+        st.session_state.evaluation_results = evaluation
+
+    evaluation = st.session_state.get("evaluation_results")
+    if not evaluation:
+        st.info("Run evaluation to see retrieval scores.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Tests Run", evaluation.get("tests_run", 0))
+    with col2:
+        st.metric(
+            "Average Final Score",
+            f"{evaluation.get('average_final_score', 0):.2f}",
+        )
+
+    for result in evaluation.get("results", []):
+        title = (
+            f"{result['id']} | Final {result['final_score']:.2f} | "
+            f"Source {result['source_hit_score']:.2f} | "
+            f"Keywords {result['keyword_score']:.2f}"
+        )
+        with st.expander(title, expanded=False):
+            st.markdown(f"**Question:** {result['question']}")
+            st.markdown(f"**Expected Answer:** {result['expected_answer']}")
+            st.markdown(
+                "**Expected Source:** "
+                f"{result['expected_document']} page {result['expected_page']}"
+            )
+            st.markdown(
+                "**Expected Keywords:** "
+                + ", ".join(result.get("expected_keywords", []))
+            )
+
+            sources = result.get("retrieved_sources", [])
+            if sources:
+                render_sources(sources, expandable=False)
+            else:
+                st.warning("No sources retrieved.")
+
+
+# ==================== Main ====================
 
 
 def main() -> None:
+    """Main application entry point."""
     setup_page()
     render_sidebar()
-    render_chat()
+    chat_tab, evaluation_tab = st.tabs(["Chat", "Evaluation"])
+    with chat_tab:
+        render_chat()
+    with evaluation_tab:
+        render_evaluation_panel()
 
 
 if __name__ == "__main__":

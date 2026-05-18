@@ -1,74 +1,180 @@
 from __future__ import annotations
 
 import os
+from typing import Generator
 
-from openai import OpenAI
+from openai import OpenAI, APIError
 
-from app.config import OPENAI_MODEL
+from app.config import OPENAI_MODEL,OPENAI_API_KEY
+from app.rag import prompts
 from app.schemas import Source
-# 但是 source 最好不要只靠 LLM 生成。
-# 你后端应该自己返回 sources：
-# how to connect with prompts.py
+
 
 def format_context(sources: list[Source]) -> str:
+    """Format sources into a context string for the LLM."""
+    if not sources:
+        return ""
+    
     blocks = []
     for index, source in enumerate(sources, start=1):
+        source_ref = f"[{source.document}-P{source.page}-S{source.chunk}]"
         blocks.append(
-            f"[{index}] Dokument: {source.document}, Seite: {source.page}, "
-            f"Abschnitt: {source.chunk}\n{source.text}"
+            f"{source_ref}\n"
+            f"Document: {source.document}\n"
+            f"Page: {source.page}\n"
+            f"Clause: {source.chunk}\n"
+            f"Content: {source.text}"
         )
     return "\n\n".join(blocks)
 
 
+def _validate_question(question: str) -> None:
+    """Validate user question."""
+    if not question or not question.strip():
+        raise ValueError(prompts.ERROR_INVALID_QUESTION)
+
+
 def answer_question(question: str, sources: list[Source]) -> str:
+    """
+    Generate an answer to a question based on provided sources.
+    Returns the complete answer as a string.
+    """
+    _validate_question(question)
+    
+    if not sources:
+        return prompts.NO_SOURCES_FOUND_MESSAGE
+    
+    # Try to use OpenAI
     answer = answer_with_openai(question, sources)
+    
     if answer:
         return answer
+    
+    # Fallback to extractive answer
     return fallback_answer(sources)
 
 
 def answer_with_openai(question: str, sources: list[Source]) -> str | None:
-    api_key = os.getenv("OPENAI_API_KEY")
+    """Generate answer using OpenAI API."""
+    api_key = OPENAI_API_KEY
+    print("OPENAI_API_KEY loaded:", bool(api_key))
     if not api_key:
         return None
 
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Du beantwortest Fragen ausschließlich anhand des bereitgestellten "
-                    "Kontexts. Antworte auf Deutsch. Zitiere Quellen inline mit "
-                    "[Dokument, Seite, Abschnitt]. Wenn die Antwort nicht im Kontext "
-                    "steht, sage das klar."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Kontext:\n{format_context(sources)}\n\nFrage: {question}",
-            },
-        ],
-        temperature=0.1,
-    )
-    return response.choices[0].message.content
+    try:
+        client = OpenAI(api_key=api_key)
+        context = format_context(sources)
+        
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": prompts.SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": prompts.ANSWER_GENERATION_PROMPT.format(
+                        question=question,
+                        context=context,
+                    ),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+        )
+        
+        return response.choices[0].message.content
+    
+    except APIError as e:
+        print(f"{prompts.ERROR_OPENAI_API}: {e}")
+        return None
+
+
+def answer_question_stream(
+    question: str, sources: list[Source]
+) -> Generator[str, None, None]:
+    """
+    Generate an answer to a question with streaming support.
+    Yields text chunks as they are generated.
+    """
+    _validate_question(question)
+    
+    if not sources:
+        yield prompts.NO_SOURCES_FOUND_MESSAGE
+        return
+    
+    api_key = OPENAI_API_KEY
+    print("OPENAI_API_KEY loaded:", bool(api_key))
+    if not api_key:
+        # Fallback without streaming
+        yield fallback_answer(sources)
+        return
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        context = format_context(sources)
+        
+        with client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": prompts.SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": prompts.ANSWER_GENERATION_PROMPT.format(
+                        question=question,
+                        context=context,
+                    ),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+            stream=True,
+        ) as response:
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+    
+    except APIError as e:
+        print(f"{prompts.ERROR_OPENAI_API}: {e}")
+        yield fallback_answer(sources)
 
 
 def fallback_answer(sources: list[Source]) -> str:
+    """Generate a fallback extractive answer when API is unavailable."""
     if not sources:
-        return "Ich habe noch keine passenden Textstellen gefunden. Bitte lade zuerst PDFs hoch und indexiere sie."
-
+        return prompts.NO_SOURCES_FOUND_MESSAGE
+    
     lines = [
-        "Ohne `OPENAI_API_KEY` nutze ich eine extraktive Antwort aus den ähnlichsten Textstellen.",
-        "",
-        "Relevanteste Quellen:",
+        "**Extractive Answer (API unavailable):**\n",
+        "Based on relevant content from the documents:\n",
     ]
-    for source in sources[:3]:
-        excerpt = source.text[:650].strip()
-        if len(source.text) > 650:
+    
+    # Show top 3 sources with proper citations
+    for i, source in enumerate(sources[:3], start=1):
+        excerpt = source.text[:500].strip()
+        if len(source.text) > 500:
             excerpt += "..."
+        
+        citation = f"[{source.document}-P{source.page}-S{source.chunk}]"
+        score_text = f" (Similarity: {source.score:.1%})" if source.score else ""
+        
         lines.append(
-            f"- {source.document}, Seite {source.page}, Abschnitt {source.chunk}: {excerpt}"
+            f"\n**Source {i}:** {citation}{score_text}\n"
+            f">>> {excerpt}"
         )
+    
     return "\n".join(lines)
+
+
+def extract_sources_from_answer(answer: str, sources: list[Source]) -> list[Source]:
+    """
+    Extract source references from the generated answer.
+    Returns top sources that were cited.
+    """
+    # Simple heuristic: return the top sources used
+    return sources[:3] if sources else []
+

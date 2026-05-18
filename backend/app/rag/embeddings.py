@@ -42,97 +42,94 @@ def embed_query(query: str) -> list[float]:
 
 class LocalEmbeddingFunction:
     """Chroma embedding function backed by the local sentence-transformers model."""
-
+    def name(self) -> str:
+        return f"sentence_transformer"
+    
     def __call__(self, input: list[str]) -> list[list[float]]:
         return embed_texts(list(input))
 
 
-class VectorStore:
-    """ChromaDB vector store for RAG chunks."""
+# class VectorStore:
+#     """ChromaDB vector store for RAG chunks."""
     
-    def __init__(self):
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+#     def __init__(self):
+#         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+#         CHROMA_DIR.mkdir(parents=True, exist_ok=True)
         
-        self.client = chromadb.PersistentClient(
-            path=str(CHROMA_DIR),
-            settings=Settings(anonymized_telemetry=False),
-        )
+#         self.client = chromadb.PersistentClient(
+#             path=str(CHROMA_DIR),
+#             settings=Settings(anonymized_telemetry=False),
+#         )
         
-        self.collection = self.client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+#         # Use LocalEmbeddingFunction to match existing collection setup
+#         self.collection = self.client.get_or_create_collection(
+#             name=COLLECTION_NAME,
+#             embedding_function=LocalEmbeddingFunction(),
+#             metadata={"hnsw:space": "cosine"},
+#         )
     
-    def add_chunks(self, chunks: list[Chunk]) -> int:
-        """Add chunks to the vector store."""
-        if not chunks:
-            return 0
+#     def add_chunks(self, chunks: list[Chunk]) -> int:
+#         """Add chunks to the vector store."""
+#         if not chunks:
+#             return 0
         
-        # Embed all texts
-        embeddings = embed_texts([chunk.text for chunk in chunks])
+#         # The embedding function is handled by ChromaDB's collection
+#         self.collection.upsert(
+#             ids=[chunk.id for chunk in chunks],
+#             documents=[chunk.text for chunk in chunks],
+#             metadatas=[chunk.metadata for chunk in chunks],
+#         )
         
-        # Add to collection
-        self.collection.upsert(
-            ids=[chunk.id for chunk in chunks],
-            embeddings=embeddings,
-            documents=[chunk.text for chunk in chunks],
-            metadatas=[chunk.metadata for chunk in chunks],
-        )
-        
-        return len(chunks)
+#         return len(chunks)
     
-    def query_chunks(self, query: str, top_k: int = 5) -> list[dict]:
-        """Query the vector store for similar chunks."""
-        if self.collection.count() == 0:
-            return []
+#     def query_chunks(self, query: str, top_k: int = 5) -> list[dict]:
+#         """Query the vector store for similar chunks."""
+#         if self.collection.count() == 0:
+#             return []
         
-        # Embed query
-        query_embedding = embed_query(query)
+#         # Query collection (embeddings handled by ChromaDB)
+#         results = self.collection.query(
+#             query_texts=[query],
+#             n_results=top_k,
+#             include=["documents", "metadatas", "distances"]
+#         )
         
-        # Query collection
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"]
-        )
-        
-        # Format results
-        retrieved = []
-        if results and results.get("documents"):
-            docs = results.get("documents", [[]])[0]
-            metas = results.get("metadatas", [[]])[0]
-            dists = results.get("distances", [[]])[0]
-            ids = results.get("ids", [[]])[0]
+#         # Format results
+#         retrieved = []
+#         if results and results.get("documents"):
+#             docs = results.get("documents", [[]])[0]
+#             metas = results.get("metadatas", [[]])[0]
+#             dists = results.get("distances", [[]])[0]
+#             ids = results.get("ids", [[]])[0]
             
-            for chunk_id, text, metadata, distance in zip(ids, docs, metas, dists):
-                retrieved.append({
-                    "id": chunk_id,
-                    "text": text,
-                    "metadata": metadata,
-                    "score": 1 - float(distance) if distance is not None else 0.0,
-                })
+#             for chunk_id, text, metadata, distance in zip(ids, docs, metas, dists):
+#                 retrieved.append({
+#                     "id": chunk_id,
+#                     "text": text,
+#                     "metadata": metadata,
+#                     "score": 1 - float(distance) if distance is not None else 0.0,
+#                 })
         
-        return retrieved
+#         return retrieved
     
-    def list_documents(self) -> set[str]:
-        """List all unique documents in the store."""
-        result = self.collection.get(include=["metadatas"])
-        documents: set[str] = set()
+#     def list_documents(self) -> set[str]:
+#         """List all unique documents in the store."""
+#         result = self.collection.get(include=["metadatas"])
+#         documents: set[str] = set()
         
-        for metadata in result.get("metadatas") or []:
-            if metadata and metadata.get("document_name"):
-                documents.add(str(metadata["document_name"]))
+#         for metadata in result.get("metadatas") or []:
+#             if metadata and metadata.get("document_name"):
+#                 documents.add(str(metadata["document_name"]))
         
-        return documents
+#         return documents
     
-    def get_stats(self) -> dict:
-        """Get collection statistics."""
-        count = self.collection.count()
-        documents = self.list_documents()
+#     def get_stats(self) -> dict:
+#         """Get collection statistics."""
+#         count = self.collection.count()
+#         documents = self.list_documents()
         
-        return {
-            "total_chunks": count,
-            "total_documents": len(documents),
-            "documents": sorted(documents),
-        }
+#         return {
+#             "total_chunks": count,
+#             "total_documents": len(documents),
+#             "documents": sorted(documents),
+#         }
