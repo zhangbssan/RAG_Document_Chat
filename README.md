@@ -9,7 +9,7 @@ It is designed for business-style PDF documents such as agreements, manuals, han
 The chat feature works with uploaded text-based PDFs. The evaluation feature is a fixed retrieval benchmark for the included sample documents.
 
 For the detailed repository structure and high-level RAG flow diagram, see `docs/architecture.md`.
-Local run example screenshots are stored in `docs/screenshots/`, including the evaluation example screenshot.
+Local run example screenshots are stored in `docs/screenshots/`, including the evaluation example screenshot and a short local demo recording.
 
 ## Feature Checklist
 
