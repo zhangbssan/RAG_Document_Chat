@@ -5,7 +5,10 @@ __pycache__/
 .env
 .env.*
 .env.example
-backend/data/
+!backend/data/
 !backend/app/data/**
 !backend/data/uploads/.gitkeep
 !backend/data/chroma/.gitkeep
+data/huggingface/
+backend/data/huggingface/
+**/data/huggingface/
