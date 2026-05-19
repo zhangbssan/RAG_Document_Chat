@@ -57,3 +57,17 @@ docker compose up --build
 Frontend: `http://127.0.0.1:8501`
 
 Backend: `http://127.0.0.1:8000`
+
+Upload-Feld für PDFs (mehrere gleichzeitig)
+
+Chunking, Embedding und Vektordatenbank (FAISS, ChromaDB oder pgvector)
+
+Chat-Interface mit Antworten inkl. Quellenangabe (Seite / Textabschnitt), der Chat weiß aus welchem Dokument die Antwort kommt
+
+5 hartcodierte Testfragen mit erwarteten Antworten und automatisch berechnetem Retrieval-Score (z.B. via RAGAS oder eigener Metrik), Score sichtbar im UI
+
+FastAPI Backend, Frontend frei wählbar (Streamlit, React, Next.js)
+
+Lauffähig via Docker Compose
+
+README mit Erklärung der gewählten Chunking-Strategie und deren Auswirkung auf die Retrieval-Qualität

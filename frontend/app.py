@@ -45,9 +45,16 @@ def upload_pdfs(uploaded_files) -> list[str]:
     return response.json()["messages"]
 
 
-def get_document_stats() -> dict:
-    """Get document statistics from backend."""
-    response = requests.get(api_url("/api/documents/stats"), timeout=30)
+def get_document_list() -> dict:
+    """Get indexed document details from backend."""
+    response = requests.get(api_url("/api/documents/list"), timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def delete_document(file_hash: str) -> dict:
+    """Delete one indexed document from the backend."""
+    response = requests.delete(api_url(f"/api/documents/{file_hash}"), timeout=60)
     response.raise_for_status()
     return response.json()
 
@@ -134,6 +141,8 @@ def render_sidebar() -> None:
         
         # Backend connection info
         st.caption(f"Backend: `{API_BASE_URL}`")
+        if st.session_state.get("document_delete_message"):
+            st.success(st.session_state.pop("document_delete_message"))
         
         # File uploader
         st.subheader("Upload PDF Files")
@@ -141,6 +150,7 @@ def render_sidebar() -> None:
             "Select PDF files to upload",
             type=["pdf"],
             accept_multiple_files=True,
+            help="Upload one or more PDF files. Maximum size: 25 MB per file.",
             label_visibility="collapsed",
         )
         
@@ -164,20 +174,45 @@ def render_sidebar() -> None:
         # Document statistics
         st.subheader("📊 Index Statistics")
         try:
-            stats = get_document_stats()
+            document_list = get_document_list()
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Total Text Clauses", stats.get("chunk_count", 0))
+                st.metric("Total Text Clauses", document_list.get("total_chunks", 0))
             with col2:
-                st.metric("Indexed Documents", stats.get("document_count", 0))
+                st.metric("Indexed Documents", document_list.get("total_documents", 0))
             
             # List documents
-            documents = stats.get("documents", [])
+            documents = document_list.get("documents", [])
             if documents:
                 st.subheader("Indexed Documents")
                 for doc in documents:
-                    st.caption(f"📄 {doc}")
+                    document_name = doc.get("document_name", "Unknown")
+                    file_hash = doc.get("file_hash")
+                    pages = doc.get("pages", 0)
+                    chunks = doc.get("chunks", 0)
+
+                    cols = st.columns([4, 1])
+                    with cols[0]:
+                        st.caption(
+                            f"📄 {document_name} | Pages: {pages} | Clauses: {chunks}"
+                        )
+                    with cols[1]:
+                        if st.button(
+                            "Delete",
+                            key=f"delete_{file_hash}",
+                            disabled=not file_hash,
+                            use_container_width=True,
+                        ):
+                            try:
+                                result = delete_document(file_hash)
+                                st.session_state.document_delete_message = (
+                                    f"Deleted {result.get('document_name', document_name)} "
+                                    f"({result.get('deleted_chunks', 0)} clauses)."
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"❌ Delete failed: {exc}")
             else:
                 st.info("No documents indexed yet")
         

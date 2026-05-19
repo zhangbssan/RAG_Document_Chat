@@ -47,6 +47,20 @@ def add_chunks(chunks: list[Chunk]) -> int:
         metadatas=[chunk.metadata for chunk in chunks],
     )
     return len(chunks)
+
+
+def delete_document(file_hash: str) -> int:
+    collection = get_collection()
+    result = collection.get(where={"file_hash": file_hash})
+    ids = result.get("ids") or []
+
+    if not ids:
+        return 0
+
+    collection.delete(ids=ids)
+    return len(ids)
+
+
 def query_chunks(query: str, top_k: int = 5) -> list[dict]:
     if not query.strip():
         raise ValueError("Query must not be empty.")
