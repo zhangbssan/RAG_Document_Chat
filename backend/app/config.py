@@ -20,5 +20,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 TOP_K = int(os.getenv("TOP_K", "5"))
+RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "200"))
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "950"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "180"))

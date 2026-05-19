@@ -34,7 +34,11 @@ def _validate_question(question: str) -> None:
         raise ValueError(prompts.ERROR_INVALID_QUESTION)
 
 
-def answer_question(question: str, sources: list[Source]) -> str:
+def answer_question(
+    question: str,
+    sources: list[Source],
+    api_key: str | None = None,
+) -> str:
     """
     Generate an answer to a question based on provided sources.
     Returns the complete answer as a string.
@@ -45,7 +49,7 @@ def answer_question(question: str, sources: list[Source]) -> str:
         return prompts.NO_SOURCES_FOUND_MESSAGE
     
     # Try to use OpenAI
-    answer = answer_with_openai(question, sources)
+    answer = answer_with_openai(question, sources, api_key=api_key)
     
     if answer:
         return answer
@@ -54,10 +58,13 @@ def answer_question(question: str, sources: list[Source]) -> str:
     return fallback_answer(sources)
 
 
-def answer_with_openai(question: str, sources: list[Source]) -> str | None:
+def answer_with_openai(
+    question: str,
+    sources: list[Source],
+    api_key: str | None = None,
+) -> str | None:
     """Generate answer using OpenAI API."""
-    api_key = OPENAI_API_KEY
-    print("OPENAI_API_KEY loaded:", bool(api_key))
+    api_key = api_key or OPENAI_API_KEY
     if not api_key:
         return None
 
@@ -92,7 +99,9 @@ def answer_with_openai(question: str, sources: list[Source]) -> str | None:
 
 
 def answer_question_stream(
-    question: str, sources: list[Source]
+    question: str,
+    sources: list[Source],
+    api_key: str | None = None,
 ) -> Generator[str, None, None]:
     """
     Generate an answer to a question with streaming support.
@@ -104,8 +113,7 @@ def answer_question_stream(
         yield prompts.NO_SOURCES_FOUND_MESSAGE
         return
     
-    api_key = OPENAI_API_KEY
-    print("OPENAI_API_KEY loaded:", bool(api_key))
+    api_key = api_key or OPENAI_API_KEY
     if not api_key:
         # Fallback without streaming
         yield fallback_answer(sources)
@@ -160,7 +168,11 @@ def fallback_answer(sources: list[Source]) -> str:
             excerpt += "..."
         
         citation = f"[{source.document}-P{source.page}-S{source.chunk}]"
-        score_text = f" (Similarity: {source.score:.1%})" if source.score else ""
+        score_text = (
+            f" (Rank score: {source.score:.4f})"
+            if source.score is not None
+            else ""
+        )
         
         lines.append(
             f"\n**Source {i}:** {citation}{score_text}\n"
@@ -177,4 +189,3 @@ def extract_sources_from_answer(answer: str, sources: list[Source]) -> list[Sour
     """
     # Simple heuristic: return the top sources used
     return sources[:3] if sources else []
-

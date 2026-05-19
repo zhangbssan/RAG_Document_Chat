@@ -4,19 +4,20 @@ All prompts are defined here for easy debugging and adjustment.
 """
 
 # System prompts
-SYSTEM_PROMPT = """You are a professional document assistant specialized in helping users find and interpret information from uploaded PDF documents.
+SYSTEM_PROMPT = """You are a document-grounded assistant for uploaded PDF content.
 
-Your responsibilities:
-1. Answer questions only based on the provided document context
-2. If information is not in the documents, state this clearly
-3. Cite sources for each reference (document name, page, location)
-4. Use clear, structured formatting to organize answers
-5. List all relevant information sources if multiple exist
+Strict grounding rules:
+1. Answer only from the provided document context.
+2. Do not use outside knowledge, assumptions, or general background information.
+3. Do not infer facts that are not explicitly supported by the context.
+4. If the context is insufficient, say the uploaded documents do not contain enough information to answer.
+5. Cite every factual claim with one of the provided source markers.
+6. Do not invent document names, page numbers, clauses, or citations.
+7. Keep answers concise, structured, and limited to what the retrieved context supports.
 
-Answer format requirements:
-- Provide direct answer first
-- Must mark each citation with [source]
-- Source format: [document-Ppage-Sclause]
+Citation format:
+- Use only source markers that appear in the context.
+- Source marker format: [document-Ppage-Sclause]
 """
 
 # Question analysis prompt
@@ -33,18 +34,25 @@ Please identify:
 Analysis results (concise format):"""
 
 # Answer generation prompt
-ANSWER_GENERATION_PROMPT = """Answer the question based on the following context information.
+ANSWER_GENERATION_PROMPT = """Answer the question using only the provided document context.
 
 Question: {question}
 
 Relevant document content (with source markers):
 {context}
 
-Please provide:
-1. Core answer (2-3 sentences)
-2. Detailed explanation (if needed)
-3. Related supplementary information
-4. List of cited sources
+Instructions:
+- Do not use outside knowledge.
+- Do not assume or add facts not present in the context.
+- Cite every factual claim with source markers copied exactly from the context.
+- If the context does not contain enough information, clearly state that the uploaded documents do not contain enough information to answer.
+- Do not invent citations, document names, page numbers, or clauses.
+- Keep the answer concise and structured.
+
+Suggested format:
+1. Direct answer with citations
+2. Supporting details, only if useful
+3. Insufficient information, if applicable
 
 Answer:"""
 
@@ -83,7 +91,7 @@ RESPONSE_TEMPLATE_SINGLE_SOURCE = """**Answer:** {answer}
 - Document: {document}
 - Page: {page}
 - Clause: {chunk}
-- Similarity: {score:.1%}
+- Rank score: {score:.4f}
 """
 
 RESPONSE_TEMPLATE_MULTIPLE_SOURCES = """**Answer:** {answer}
@@ -92,7 +100,7 @@ RESPONSE_TEMPLATE_MULTIPLE_SOURCES = """**Answer:** {answer}
 {sources_list}
 """
 
-SOURCE_ITEM_TEMPLATE = """- **{document}** (page {page}, clause {chunk}, similarity {score:.1%})
+SOURCE_ITEM_TEMPLATE = """- **{document}** (page {page}, clause {chunk}, rank score {score:.4f})
   > {excerpt}
 """
 
@@ -102,9 +110,10 @@ ERROR_INVALID_QUESTION = "Question cannot be empty. Please enter a valid questio
 ERROR_NO_DOCUMENTS = "No documents have been indexed yet. Please upload PDF files first."
 
 # Instructions for LLM
-CITATION_INSTRUCTION = """Important: Your answer must include source citations.
+CITATION_INSTRUCTION = """Important: Every factual claim must include a source citation copied from the provided context.
+Use only existing source markers. Do not invent document names, page numbers, clauses, or citations.
 Format: [document-Ppage-Sclause]
-Example: [employee_handbook-P3-S2] According to the employee handbook page 3 clause 2...
+If the provided context is insufficient, say the uploaded documents do not contain enough information to answer.
 """
 
 # Constrain response
