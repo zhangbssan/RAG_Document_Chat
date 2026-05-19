@@ -53,18 +53,24 @@
 #     return sources
 from __future__ import annotations
 
-from app.config import TOP_K
+from app.config import RERANK_TOP_K, TOP_K
 from app.schemas import Source
+from app.rag.reranker import rerank_chunks
 from app.rag.vector_store import query_chunks
 
 
-def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[dict]:
+def retrieve_chunks(
+    query: str,
+    top_k: int = TOP_K,
+    rerank_top_k: int = RERANK_TOP_K,
+) -> list[dict]:
     """
     Retrieve similar chunks from the vector store.
 
     Args:
         query: User query string.
-        top_k: Number of chunks to retrieve.
+        top_k: Number of chunks to retrieve from the vector store.
+        rerank_top_k: Number of reranked chunks to return.
 
     Returns:
         List of retrieved chunks with metadata and scores.
@@ -72,14 +78,27 @@ def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[dict]:
     if not query.strip():
         raise ValueError("Query must not be empty.")
 
-    return query_chunks(query=query, top_k=top_k)
+    retrieved = query_chunks(query=query, top_k=top_k)
+    return rerank_chunks(
+        query=query,
+        chunks=retrieved,
+        rerank_top_k=rerank_top_k,
+    )
 
 
-def search_sources(question: str, top_k: int = TOP_K) -> list[Source]:
+def search_sources(
+    question: str,
+    top_k: int = TOP_K,
+    rerank_top_k: int = RERANK_TOP_K,
+) -> list[Source]:
     """
     Search and return sources for the chat response.
     """
-    retrieved = retrieve_chunks(question, top_k=top_k)
+    retrieved = retrieve_chunks(
+        question,
+        top_k=top_k,
+        rerank_top_k=rerank_top_k,
+    )
 
     sources: list[Source] = []
 
