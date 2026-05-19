@@ -9,6 +9,11 @@ import streamlit as st
 
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+EVALUATION_SAMPLE_DOCUMENTS = [
+    "employee_handbook_en.pdf",
+    "product_manual_en.pdf",
+    "service_agreement_en.pdf",
+]
 
 
 # ==================== Page Setup ====================
@@ -267,7 +272,7 @@ def render_source_items(sources: list[dict]) -> None:
             with cols[1]:
                 if source.get("score") is not None:
                     score = source.get("score", 0)
-                    st.caption(f"RRF Score: {score:.4f}")
+                    st.caption(f"Retrieval rank score: {score:.4f}")
 
             # Source content
             st.markdown(
@@ -356,7 +361,49 @@ def render_chat() -> None:
 def render_evaluation_panel() -> None:
     """Render retrieval evaluation results."""
     st.subheader("Evaluation Panel")
-    st.caption("Runs the hardcoded backend test cases against retrieved chunks.")
+    st.caption("Evaluation uses 5 predefined questions for the sample PDFs.")
+
+    evaluation = st.session_state.get("evaluation_results")
+    required_documents = (
+        evaluation.get("required_documents", []) if evaluation else EVALUATION_SAMPLE_DOCUMENTS
+    )
+    indexed_documents = evaluation.get("indexed_documents", []) if evaluation else []
+    missing_documents = evaluation.get("missing_documents", []) if evaluation else []
+
+    if not evaluation:
+        try:
+            document_list = get_document_list()
+            indexed_documents = sorted(
+                doc.get("document_name", "")
+                for doc in document_list.get("documents", [])
+                if doc.get("document_name")
+            )
+            missing_documents = sorted(
+                set(required_documents) - set(indexed_documents)
+            )
+        except Exception:
+            indexed_documents = []
+            missing_documents = []
+
+    if required_documents:
+        st.markdown("**Required sample documents:**")
+        for document in required_documents:
+            st.caption(f"`sample_docs/{document}`")
+
+    if indexed_documents:
+        with st.expander("Currently indexed documents", expanded=False):
+            for document in indexed_documents:
+                st.caption(document)
+
+    if missing_documents:
+        st.warning(
+            "Some required sample documents are missing. Please upload them before "
+            "running evaluation. Scores may be low.\n\n"
+            "Missing sample documents:\n"
+            + "\n".join(
+                f"- `sample_docs/{document}`" for document in missing_documents
+            )
+        )
 
     if st.button("Run Evaluation", type="primary"):
         with st.spinner("Running evaluation..."):
@@ -371,6 +418,7 @@ def render_evaluation_panel() -> None:
             return
 
         st.session_state.evaluation_results = evaluation
+        st.rerun()
 
     evaluation = st.session_state.get("evaluation_results")
     if not evaluation:
@@ -387,10 +435,18 @@ def render_evaluation_panel() -> None:
         )
 
     for result in evaluation.get("results", []):
+        document_hit_score = result.get(
+            "document_hit_score",
+            result.get("source_hit_score", 0.0),
+        )
+        page_hit_score = result.get("page_hit_score", 0.0)
+        keyword_score = result.get("keyword_score", 0.0)
+        final_score = result.get("final_score", 0.0)
         title = (
-            f"{result['id']} | Final {result['final_score']:.2f} | "
-            f"Source {result['source_hit_score']:.2f} | "
-            f"Keywords {result['keyword_score']:.2f}"
+            f"{result['id']} | Final {final_score:.2f} | "
+            f"Document {document_hit_score:.2f} | "
+            f"Page {page_hit_score:.2f} | "
+            f"Keywords {keyword_score:.2f}"
         )
         with st.expander(title, expanded=False):
             st.markdown(f"**Question:** {result['question']}")
@@ -403,6 +459,15 @@ def render_evaluation_panel() -> None:
                 "**Expected Keywords:** "
                 + ", ".join(result.get("expected_keywords", []))
             )
+            score_cols = st.columns(4)
+            with score_cols[0]:
+                st.metric("Document Hit", f"{document_hit_score:.2f}")
+            with score_cols[1]:
+                st.metric("Page Hit", f"{page_hit_score:.2f}")
+            with score_cols[2]:
+                st.metric("Keyword Score", f"{keyword_score:.2f}")
+            with score_cols[3]:
+                st.metric("Final Score", f"{final_score:.2f}")
 
             sources = result.get("retrieved_sources", [])
             if sources:

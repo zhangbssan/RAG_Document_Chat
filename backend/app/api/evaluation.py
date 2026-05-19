@@ -5,17 +5,8 @@ from fastapi import APIRouter
 from app.data.test_cases import test_cases
 from app.rag.evaluator import evaluate_retrieval
 from app.rag.retriever import search_sources
+from app.rag.vector_store import list_documents
 
-# 运行 hardcoded tests。
-# 对应 endpoint：POST /evaluate
-# 职责：1. 读取 TEST_CASES
-#      2. 对每个 question 调用 retriever
-#      3. 计算 retrieval score
-#      4. 返回每个测试问题的 expected answer、retrieved sources、score
-# UI show：Question
-#          Expected Answer
-#          Retrieved Sources
-#          Retrieval Score
 
 
 router = APIRouter()
@@ -25,6 +16,23 @@ router = APIRouter()
 async def run_evaluation() -> dict:
     """Run evaluation on test cases."""
     try:
+        required_documents = sorted(
+            {
+                test_case["expected_document"]
+                for test_case in test_cases
+                if test_case.get("expected_document")
+            }
+        )
+        indexed_document_records = list_documents()
+        indexed_documents = sorted(
+            {
+                str(document["document_name"])
+                for document in indexed_document_records
+                if document.get("document_name")
+            }
+        )
+        missing_documents = sorted(set(required_documents) - set(indexed_documents))
+
         results = []
 
         for test_case in test_cases:
@@ -64,6 +72,9 @@ async def run_evaluation() -> dict:
             "status": "evaluation completed",
             "tests_run": len(results),
             "average_final_score": round(average_final_score, 4),
+            "required_documents": required_documents,
+            "indexed_documents": indexed_documents,
+            "missing_documents": missing_documents,
             "results": results,
         }
     except Exception as e:

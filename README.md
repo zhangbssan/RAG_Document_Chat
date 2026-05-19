@@ -71,3 +71,20 @@ FastAPI Backend, Frontend frei wählbar (Streamlit, React, Next.js)
 Lauffähig via Docker Compose
 
 README mit Erklärung der gewählten Chunking-Strategie und deren Auswirkung auf die Retrieval-Qualität
+
+
+
+Evaluation
+
+The app includes a small fixed retrieval benchmark with five hardcoded questions. 
+
+The benchmark is designed for the sample PDFs in `sample_docs/`.
+
+Before running evaluation:
+1. Start the app.
+2. Upload the sample PDFs through the UI.
+3. Open the Evaluation section and click Run Evaluation.
+
+The evaluation is read-only. It does not clear, upload, or modify documents.
+
+The chat feature works with any uploaded text-based PDF, while the evaluation benchmark is tied to the sample documents because expected answers and source pages must be known in advance.
