@@ -266,8 +266,8 @@ def render_source_items(sources: list[dict]) -> None:
                 )
             with cols[1]:
                 if source.get("score") is not None:
-                    score = source.get("score", 0) * 100
-                    st.caption(f"Similarity: {score:.0f}%")
+                    score = source.get("score", 0)
+                    st.caption(f"RRF Score: {score:.4f}")
 
             # Source content
             st.markdown(
