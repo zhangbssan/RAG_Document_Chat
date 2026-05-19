@@ -95,26 +95,30 @@ def stream_answer(question: str):
         
         sources = []
         
-        # Parse streaming response
         for line in response.iter_lines():
             if not line:
                 continue
-            
+
+            # New backend format: application/x-ndjson
+            data_line = line
+
+            # Backward compatibility for the previous SSE-style stream.
             if line.startswith(b"data: "):
-                try:
-                    data_str = line[6:].decode("utf-8")
-                    data = json.loads(data_str)
-                    
-                    if data.get("type") == "sources":
-                        sources = data.get("data", [])
-                    elif data.get("type") == "content":
-                        yield ("content", data.get("data", ""))
-                    elif data.get("type") == "done":
-                        yield ("done", None)
-                        yield ("sources", sources)
-                
-                except json.JSONDecodeError:
-                    continue
+                data_line = line[6:]
+
+            try:
+                data = json.loads(data_line.decode("utf-8"))
+
+                if data.get("type") == "sources":
+                    sources = data.get("data", [])
+                elif data.get("type") in {"token", "content"}:
+                    yield ("content", data.get("data", ""))
+                elif data.get("type") == "done":
+                    yield ("done", None)
+                    yield ("sources", sources)
+
+            except json.JSONDecodeError:
+                continue
     
     except Exception as e:
         yield ("error", f"Stream processing failed: {str(e)}")

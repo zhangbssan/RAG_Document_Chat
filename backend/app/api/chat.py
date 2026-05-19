@@ -7,9 +7,19 @@ import json
 from app.config import TOP_K
 from app.rag.generator import answer_question, answer_question_stream
 from app.rag.retriever import search_sources
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, Source
 
 router = APIRouter()
+
+
+def _json_event(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _source_to_dict(source: Source) -> dict:
+    if hasattr(source, "model_dump"):
+        return source.model_dump()
+    return source.dict()
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -50,54 +60,37 @@ def chat(request: ChatRequest) -> ChatResponse:
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest):
     """
-    Streaming chat endpoint - streams the answer token by token.
+    Streaming chat endpoint - streams sources first, then answer tokens.
     
     Returns:
-        Server-Sent Events stream with:
-        - "sources": Initial source list (JSON)
-        - "content": Answer content (text chunks)
-        - "done": Final marker
+        NDJSON stream with sources, token chunks, and a done marker.
     """
     try:
         if not request.question or not request.question.strip():
             raise ValueError("Question cannot be empty")
         
-        # Retrieve relevant sources
         sources = search_sources(
-            request.question,
+            question=request.question,
             top_k=request.top_k or TOP_K
         )
         
-        # Create streaming response
         def generate():
-            # First, send the metadata with sources
-            sources_json = [
-                {
-                    "text": source.text,
-                    "document": source.document,
-                    "page": source.page,
-                    "chunk": source.chunk,
-                    "score": source.score,
-                }
-                for source in sources
-            ]
+            yield _json_event({
+                "type": "sources",
+                "data": [_source_to_dict(source) for source in sources],
+            })
             
-            yield f"data: {json.dumps({'type': 'sources', 'data': sources_json})}\n\n"
-            
-            # Then stream the answer
             for text_chunk in answer_question_stream(request.question, sources):
-                yield f"data: {json.dumps({'type': 'content', 'data': text_chunk})}\n\n"
+                yield _json_event({"type": "token", "data": text_chunk})
             
-            # Send done signal
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield _json_event({"type": "done"})
         
         return StreamingResponse(
             generate(),
-            media_type="text/event-stream",
+            media_type="application/x-ndjson",
         )
     
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stream processing failed: {str(e)}") from e
-
