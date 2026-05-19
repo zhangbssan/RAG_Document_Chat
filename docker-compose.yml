@@ -1,18 +1,43 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      CHROMA_DIR: /app/data/chroma
+      UPLOAD_DIR: /app/data/uploads
+      HF_HOME: /app/data/huggingface
+      PYTHONUNBUFFERED: "1"
     ports:
       - "8000:8000"
     volumes:
       - ./backend/data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     environment:
       API_BASE_URL: http://backend:8000
+      PYTHONUNBUFFERED: "1"
     ports:
       - "8501:8501"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
