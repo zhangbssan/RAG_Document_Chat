@@ -64,7 +64,22 @@ def delete_document(file_hash: str) -> dict:
     return response.json()
 
 
-def ask_question(question: str, use_stream: bool = False) -> dict | None:
+def _chat_payload(question: str, openai_api_key: str | None = None) -> dict:
+    """Build a chat request payload without persisting request-only secrets."""
+    payload = {
+        "question": question,
+        "top_k": 5,
+    }
+    if openai_api_key:
+        payload["openai_api_key"] = openai_api_key
+    return payload
+
+
+def ask_question(
+    question: str,
+    use_stream: bool = False,
+    openai_api_key: str | None = None,
+) -> dict | None:
     """
     Ask a question.
     
@@ -80,7 +95,7 @@ def ask_question(question: str, use_stream: bool = False) -> dict | None:
     
     response = requests.post(
         api_url("/api/chat"),
-        json={"question": question},
+        json=_chat_payload(question, openai_api_key),
         timeout=300
     )
     response.raise_for_status()
@@ -94,12 +109,12 @@ def run_evaluation() -> dict:
     return response.json()
 
 
-def stream_answer(question: str):
+def stream_answer(question: str, openai_api_key: str | None = None):
     """Stream answer chunks from the backend."""
     try:
         response = requests.post(
             api_url("/api/chat/stream"),
-            json={"question": question},
+            json=_chat_payload(question, openai_api_key),
             timeout=300,
             stream=True,
         )
@@ -139,13 +154,21 @@ def stream_answer(question: str):
 # ==================== UI Components ====================
 
 
-def render_sidebar() -> None:
+def render_sidebar() -> str | None:
     """Render sidebar with document management."""
     with st.sidebar:
         st.header("📁 Document Management")
         
         # Backend connection info
         st.caption(f"Backend: `{API_BASE_URL}`")
+        openai_api_key = st.text_input(
+            "OpenAI API Key (optional)",
+            type="password",
+            help=(
+                "Used only for this session/request. If empty, the app falls back "
+                "to backend env key or extractive answers."
+            ),
+        ).strip()
         if st.session_state.get("document_delete_message"):
             st.success(st.session_state.pop("document_delete_message"))
         
@@ -244,6 +267,8 @@ def render_sidebar() -> None:
             """
         )
 
+        return openai_api_key or None
+
 
 def render_sources(sources: list[dict], expandable: bool = True) -> None:
     """Render source citations for an answer."""
@@ -282,7 +307,7 @@ def render_source_items(sources: list[dict]) -> None:
             st.divider()
 
 
-def render_chat() -> None:
+def render_chat(openai_api_key: str | None = None) -> None:
     """Render chat interface."""
     # Initialize session state
     if "messages" not in st.session_state:
@@ -318,7 +343,10 @@ def render_chat() -> None:
                 sources = []
                 
                 with st.spinner("⏳ Thinking..."):
-                    for event_type, event_data in stream_answer(prompt):
+                    for event_type, event_data in stream_answer(
+                        prompt,
+                        openai_api_key=openai_api_key,
+                    ):
                         if event_type == "content":
                             full_response += event_data
                             message_placeholder.markdown(full_response + "▌")
@@ -327,7 +355,11 @@ def render_chat() -> None:
                         elif event_type == "error":
                             # Fallback: use regular endpoint if streaming fails
                             try:
-                                result = ask_question(prompt, use_stream=False)
+                                result = ask_question(
+                                    prompt,
+                                    use_stream=False,
+                                    openai_api_key=openai_api_key,
+                                )
                                 full_response = result["answer"]
                                 sources = result.get("sources", [])
                             except Exception as fallback_error:
@@ -482,10 +514,10 @@ def render_evaluation_panel() -> None:
 def main() -> None:
     """Main application entry point."""
     setup_page()
-    render_sidebar()
+    openai_api_key = render_sidebar()
     chat_tab, evaluation_tab = st.tabs(["Chat", "Evaluation"])
     with chat_tab:
-        render_chat()
+        render_chat(openai_api_key=openai_api_key)
     with evaluation_tab:
         render_evaluation_panel()
 

@@ -14,6 +14,7 @@ class Source(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     top_k: int | None = None
+    openai_api_key: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -38,7 +39,6 @@ class DocumentListResponse(BaseModel):
     total_chunks: int
     total_documents: int
     documents: list[str]
-
 
 
 

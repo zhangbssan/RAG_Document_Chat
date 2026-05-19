@@ -47,7 +47,11 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
         
         # Generate answer
-        answer = answer_question(request.question, sources)
+        answer = answer_question(
+            question=request.question,
+            sources=sources,
+            api_key=request.openai_api_key,
+        )
         
         return ChatResponse(answer=answer, sources=sources)
     
@@ -80,7 +84,11 @@ def chat_stream(request: ChatRequest):
                 "data": [_source_to_dict(source) for source in sources],
             })
             
-            for text_chunk in answer_question_stream(request.question, sources):
+            for text_chunk in answer_question_stream(
+                question=request.question,
+                sources=sources,
+                api_key=request.openai_api_key,
+            ):
                 yield _json_event({"type": "token", "data": text_chunk})
             
             yield _json_event({"type": "done"})
