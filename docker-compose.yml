@@ -9,6 +9,8 @@ services:
       CHROMA_DIR: /app/data/chroma
       UPLOAD_DIR: /app/data/uploads
       HF_HOME: /app/data/huggingface
+      TOP_K: "5"
+      RERANK_TOP_K: "3"
       PYTHONUNBUFFERED: "1"
     ports:
       - "8000:8000"
