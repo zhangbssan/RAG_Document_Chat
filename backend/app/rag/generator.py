@@ -160,7 +160,11 @@ def fallback_answer(sources: list[Source]) -> str:
             excerpt += "..."
         
         citation = f"[{source.document}-P{source.page}-S{source.chunk}]"
-        score_text = f" (Similarity: {source.score:.1%})" if source.score else ""
+        score_text = (
+            f" (Rank score: {source.score:.4f})"
+            if source.score is not None
+            else ""
+        )
         
         lines.append(
             f"\n**Source {i}:** {citation}{score_text}\n"
@@ -177,4 +181,3 @@ def extract_sources_from_answer(answer: str, sources: list[Source]) -> list[Sour
     """
     # Simple heuristic: return the top sources used
     return sources[:3] if sources else []
-
