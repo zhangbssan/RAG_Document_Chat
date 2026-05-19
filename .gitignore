@@ -2,12 +2,11 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-data/
 .env
 .env.*
 .env.example
-backend/data/uploads/*
-backend/data/chroma/*
+backend/data/
+!backend/app/data/**
 !backend/data/uploads/.gitkeep
 !backend/data/chroma/.gitkeep
 sample_docs/
