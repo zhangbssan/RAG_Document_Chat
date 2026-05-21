@@ -11,6 +11,8 @@ The chat feature works with uploaded text-based PDFs. The evaluation feature is 
 For the detailed repository structure and high-level RAG flow diagram, see `docs/architecture.md`.
 Local run example screenshots are stored in `docs/screenshots/`, including the evaluation example screenshot and a short local demo recording.
 
+A public demo is available here: [Cloud Run Demo](https://ragdocumentchatfrontend-710350614808.europe-west1.run.app/). The demo is intended for quick testing. For the most reliable local setup, use Docker Compose as described below.
+
 ## Feature Checklist
 
 | Requirement | Status | Implementation |
@@ -24,7 +26,7 @@ Local run example screenshots are stored in `docs/screenshots/`, including the e
 | README explains chunking strategy and retrieval quality | Implemented | See "Chunking Strategy and Retrieval Quality". |
 | Bonus: Streaming-Antworten | Implemented | `/api/chat/stream` sends sources first, then streams answer tokens as NDJSON. |
 | Bonus: Re-Ranking der retrieved Chunks | Implemented | Dense ChromaDB candidates are reranked using lexical overlap and Reciprocal Rank Fusion. |
-| Bonus: Public deployment | Not included | Public deployment was not included; the project is runnable locally via Docker Compose. |
+| Bonus: Public deployment | Implemented | A Cloud Run demo is available for quick testing. Docker Compose remains the recommended local setup. |
 
 ## Architecture
 
@@ -236,7 +238,7 @@ Current limitations:
 - Page-level citation can still be imperfect for some PDFs because PDF text extraction and chunk boundaries may not always align exactly with the expected page-level answer location.
 - The evaluation includes page-level scoring as a strict diagnostic signal. In some cases, the retriever may find the correct document but not the exact expected page.
 - The evaluation benchmark is fixed to the sample documents and should not be interpreted as a general benchmark for arbitrary PDFs.
-- No public deployment is included.
+- A public Cloud Run demo is available for quick testing, but Docker Compose is the recommended setup for reliable local use.
 
 Possible improvements:
 
