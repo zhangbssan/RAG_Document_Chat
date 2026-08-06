@@ -4,13 +4,14 @@
 
 **Goal:** Add a LangChain tool-calling agent that replaces the direct retrieval+generation call in `POST /api/chat`, with one tool (`search_uploaded_docs`) wrapping the existing Milvus-backed `vector_store.py` — per `docs/superpowers/specs/2026-08-06-langchain-agent-layer-design.md`.
 
-**Architecture:** `backend/app/agent/tools.py` holds the tool's core logic and a per-request factory (`make_search_tool`) that binds the real `user_context` via closure so it's never LLM-fillable — only `query` is exposed to the model. `backend/app/agent/chat_agent.py` builds a `ChatOpenAI` bound to that one tool and runs a **bounded loop** (max 3 iterations): ask the model, and if it requests tool call(s), execute them, feed results back, and ask again — allowing genuine multi-step tool use (e.g., search once, then search again with a refined query) rather than a single fixed round trip. Every step (question received, each tool call + its args, each tool result's status, final answer) is printed to stdout as a server-side trace, mirroring `ai_orchestrator.py`'s existing trace style. The tool's citations are mapped onto the existing `Source` schema. `backend/app/api/chat.py`'s `POST /api/chat` calls this instead of `search_sources()`/`answer_question()`; `POST /api/chat/stream` is untouched.
+**Architecture:** `backend/app/agent/tools.py` holds the tool's core logic and a per-request factory (`make_search_tool`) that binds the real `user_context` via closure so it's never LLM-fillable — only `query` is exposed to the model. `backend/app/agent/chat_agent.py` uses LangChain's prebuilt `langchain.agents.create_agent` (a LangGraph-based ReAct agent, already available transitively via `langchain==1.3.14`'s own `langgraph` dependency — no extra package needed) bound to that one tool, with `recursion_limit` bounding it to a handful of tool-calling rounds — allowing genuine multi-step tool use (e.g., search once, then search again with a refined query) without hand-rolling the loop ourselves. After each invocation, the returned message history is walked once to print a server-side trace (question, each tool call + its args, each tool result's status, final answer), mirroring `ai_orchestrator.py`'s existing trace style, and to extract citations into the existing `Source` schema. `backend/app/api/chat.py`'s `POST /api/chat` calls this instead of `search_sources()`/`answer_question()`; `POST /api/chat/stream` is untouched.
 
-**Tech Stack:** `langchain==1.3.14`, `langchain-core==1.5.3`, `langchain-openai==1.4.1` (exact versions verified installed and API-checked against this session — `@tool`-decorated closures, `ChatOpenAI.bind_tools`, `AIMessage.tool_calls`, `ToolMessage` all confirmed working as described below before writing this plan).
+**Tech Stack:** `langchain==1.3.14`, `langchain-core==1.5.3`, `langchain-openai==1.4.1`, `langgraph==1.2.10` (transitive, not hand-pinned), `openai==2.53.0` (bumped from the project's existing `1.82.0` — see Global Constraints). Exact versions verified installed and API-checked against this session — `@tool`-decorated closures with nested-pydantic args, `create_agent`, `GraphRecursionError`, and the resulting message shapes were all confirmed working, not guessed, before writing this plan.
 
 ## Global Constraints
 
 - Only realtime PDF (`vector_store.py`) is in scope. Offline docs, numeric data, and `/api/chat/stream` are untouched.
+- **`openai` must be upgraded from `1.82.0` to `2.53.0`.** Discovered during Task 1: `langchain-openai==1.4.1` requires `openai>=2.45.0,<3.0.0`, which conflicts with the version already pinned in `backend/requirements.txt` for `rag/generator.py`. Verified this session that `2.53.0` doesn't break `rag/generator.py` — its only imports (`from openai import OpenAI, APIError`) and usage (`OpenAI(api_key=...)`, `client.chat.completions.create(...)`, including the `stream=True` context-manager form) all still work identically under `2.53.0`. No code changes needed in `generator.py`, only the pin in `requirements.txt`.
 - `user_context` (`user_id`/`department_id`/`session_id`) is accepted by the tool's core function but **never exposed to the LLM's tool schema** — it's injected server-side via closure. Confirmed via live introspection this session: exposing it as an LLM-fillable field means the model would have to guess/hallucinate the values, which is wrong even though nothing uses them yet.
 - `user_context` values are **not used to filter search results** — search still queries the single shared `realtime_pdf_collection`, per the earlier storage-layer decision.
 - No frontend changes — `ChatResponse(answer, sources)` shape is unchanged; `chat.py`'s request/response contract is identical from the frontend's point of view.
@@ -45,11 +46,27 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `langchain`, `langchain-core`, `langchain-openai` importable from `backend/.venv`.
+- Produces: `langchain`, `langchain-core`, `langchain-openai`, `langgraph` (transitive) importable from `backend/.venv`; `openai` upgraded to a version `langchain-openai` can actually use.
 
-- [ ] **Step 1: Append to `backend/requirements.txt`**
+- [ ] **Step 1: Update `backend/requirements.txt`**
+
+Change the existing `openai==1.82.0` line to `openai==2.53.0`, and append the three new packages:
 
 ```
+fastapi==0.115.9
+uvicorn[standard]==0.47.0
+python-dotenv==1.1.0
+python-multipart==0.0.20
+numpy==1.26.4
+chromadb==1.0.10
+torch==2.2.2
+sentence-transformers==4.1.0
+pypdf==5.5.0
+pymupdf==1.24.8
+openai==2.53.0
+pymilvus==2.6.3
+SQLAlchemy==2.0.44
+PyMySQL==1.1.1
 langchain==1.3.14
 langchain-core==1.5.3
 langchain-openai==1.4.1
@@ -61,24 +78,30 @@ langchain-openai==1.4.1
 cd /Users/baoshuangzhang/Desktop/Agentic_RAG/agentic_rag/00_RAG_Document_Chat
 backend/.venv/bin/python3 -m pip install -r backend/requirements.txt
 ```
-Expected: succeeds (already verified installed in this environment during design).
+Expected: succeeds. (Installing with the old `openai==1.82.0` pin still in place fails with
+`ResolutionImpossible: langchain-openai 1.4.1 depends on openai<3.0.0 and >=2.45.0` — this is why
+the pin must change, not just add new lines.)
 
 - [ ] **Step 3: Verify**
 
 ```bash
 backend/.venv/bin/python3 -c "
-import langchain, langchain_core, langchain_openai
-print(langchain.__version__, langchain_core.__version__, langchain_openai.__version__)
+import langchain, langchain_core, langchain_openai, openai
+from langchain.agents import create_agent
+from openai import OpenAI, APIError
+print(langchain.__version__, langchain_core.__version__, langchain_openai.__version__, openai.__version__)
+print('create_agent import OK:', create_agent)
 "
 ```
-Expected: `1.3.14 1.5.3 1.4.1`.
+Expected: `1.3.14 1.5.3 1.4.1 2.53.0` then `create_agent import OK: <function create_agent ...>`,
+no errors (confirms `rag/generator.py`'s `from openai import OpenAI, APIError` still resolves too).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/baoshuangzhang/Desktop/Agentic_RAG/agentic_rag/00_RAG_Document_Chat
 git add backend/requirements.txt
-git commit -m "Add LangChain dependencies for the agent layer"
+git commit -m "Add LangChain dependencies for the agent layer, bump openai to 2.53.0 for langchain-openai compat"
 ```
 
 ---
@@ -317,8 +340,8 @@ git commit -m "Add search_uploaded_docs LangChain tool (query-only LLM schema, u
 - Test: `scripts/test_chat_agent.py` (new)
 
 **Interfaces:**
-- Consumes: `app.agent.tools.UserContext`/`make_search_tool` (Task 2), `app.config.OPENAI_API_KEY`/`OPENAI_MODEL` (existing), `app.schemas.Source` (existing, unchanged shape).
-- Produces: `run_agent_chat(question: str, user_context: dict | None = None, api_key: str | None = None, top_k: int = 5) -> dict` returning `{"answer": str, "sources": list[Source]}`. Internally loops up to `_MAX_TOOL_ITERATIONS = 3` rounds of tool calling before forcing a final answer, and prints a step-by-step trace to stdout on every call. `chat.py`'s `POST /api/chat` consumes this; `POST /api/chat/stream` is untouched and keeps using `search_sources`/`answer_question_stream` exactly as before.
+- Consumes: `app.agent.tools.UserContext`/`make_search_tool` (Task 2), `app.config.OPENAI_API_KEY`/`OPENAI_MODEL` (existing), `app.schemas.Source` (existing, unchanged shape), `langchain.agents.create_agent` + `langgraph.errors.GraphRecursionError` (both confirmed importable via the `langchain==1.3.14` install in Task 1, no extra dependency).
+- Produces: `run_agent_chat(question: str, user_context: dict | None = None, api_key: str | None = None, top_k: int = 5) -> dict` returning `{"answer": str, "sources": list[Source]}`. Internally builds a `create_agent` (LangGraph ReAct agent) bound to the one tool, invokes it once with `recursion_limit` capping it to `_MAX_TOOL_ITERATIONS = 3` tool-calling rounds, then walks the returned message history once to print a step-by-step trace to stdout and to extract citations. `chat.py`'s `POST /api/chat` consumes this; `POST /api/chat/stream` is untouched and keeps using `search_sources`/`answer_question_stream` exactly as before.
 
 - [ ] **Step 1: Write the failing test — `scripts/test_chat_agent.py`**
 
@@ -426,8 +449,10 @@ from __future__ import annotations
 
 import json
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
 
 from app.agent.tools import UserContext, make_search_tool
 from app.config import OPENAI_API_KEY, OPENAI_MODEL
@@ -436,14 +461,17 @@ from app.schemas import Source
 _SYSTEM_PROMPT = (
     "You are a helpful assistant. You have a tool, search_uploaded_docs, that searches "
     "documents the user has uploaded. Use it when the question could be answered from "
-    "those documents. You may call it more than once in the same turn if the first "
-    "search doesn't give you enough information — for example, to look up two distinct "
-    "facts needed to answer a multi-part question. If the question is unrelated to any "
-    "uploaded document (general knowledge, small talk, math, etc.), answer directly "
-    "without using the tool."
+    "those documents. You may call it more than once if the first search doesn't give "
+    "you enough information — for example, to look up two distinct facts needed to "
+    "answer a multi-part question. If the question is unrelated to any uploaded "
+    "document (general knowledge, small talk, math, etc.), answer directly without "
+    "using the tool."
 )
 
 _MAX_TOOL_ITERATIONS = 3
+# Each tool-calling round is one "agent" graph step plus one "tools" graph step;
+# +1 covers the final agent step that produces the answer with no further tool call.
+_RECURSION_LIMIT = 2 * _MAX_TOOL_ITERATIONS + 1
 
 
 def _citation_to_source(citation: dict) -> Source:
@@ -456,53 +484,70 @@ def _citation_to_source(citation: dict) -> Source:
     )
 
 
+def _print_trace(messages: list) -> None:
+    for msg in messages:
+        kind = msg.__class__.__name__
+        if kind == "HumanMessage":
+            print(f"🧑 [agent] question: {msg.content!r}")
+        elif kind == "AIMessage":
+            if getattr(msg, "tool_calls", None):
+                for call in msg.tool_calls:
+                    print(f"🔧 [agent] calling {call['name']}({call['args']})")
+            elif msg.content:
+                print(f"🤖 [agent] final answer: {str(msg.content)[:200]!r}")
+        elif kind == "ToolMessage":
+            try:
+                payload = json.loads(msg.content)
+                print(
+                    f"   ↳ status={payload.get('status')} "
+                    f"result_count={payload.get('metadata', {}).get('result_count')}"
+                )
+            except (TypeError, ValueError):
+                print(f"   ↳ tool result: {str(msg.content)[:200]!r}")
+
+
 def run_agent_chat(
     question: str,
     user_context: dict | None = None,
     api_key: str | None = None,
     top_k: int = 5,
 ) -> dict:
-    print(f"🧑 [agent] question: {question!r}")
-
     ctx = UserContext(**(user_context or {}))
     search_tool = make_search_tool(ctx, top_k=top_k)
 
     llm = ChatOpenAI(model=OPENAI_MODEL, api_key=api_key or OPENAI_API_KEY, temperature=0)
-    llm_with_tools = llm.bind_tools([search_tool])
+    agent = create_agent(model=llm, tools=[search_tool], system_prompt=_SYSTEM_PROMPT)
 
-    messages = [SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=question)]
+    try:
+        result = agent.invoke(
+            {"messages": [HumanMessage(content=question)]},
+            config={"recursion_limit": _RECURSION_LIMIT},
+        )
+    except GraphRecursionError:
+        print(f"⚠️ [agent] hit max iterations ({_MAX_TOOL_ITERATIONS}) without a final answer")
+        return {
+            "answer": (
+                "I wasn't able to finish researching this within the allowed number of "
+                "tool calls. Please try rephrasing your question."
+            ),
+            "sources": [],
+        }
+
+    messages = result["messages"]
+    _print_trace(messages)
+
     sources: list[Source] = []
+    for msg in messages:
+        if msg.__class__.__name__ != "ToolMessage":
+            continue
+        try:
+            payload = json.loads(msg.content)
+        except (TypeError, ValueError):
+            continue
+        if payload.get("status") == "success":
+            sources.extend(_citation_to_source(c) for c in payload.get("citations", []))
 
-    for iteration in range(1, _MAX_TOOL_ITERATIONS + 1):
-        ai_message = llm_with_tools.invoke(messages)
-
-        if not ai_message.tool_calls:
-            print(f"🤖 [agent] iteration {iteration}: no tool call, final answer")
-            return {"answer": ai_message.content, "sources": sources}
-
-        messages.append(ai_message)
-
-        for tool_call in ai_message.tool_calls:
-            print(f"🔧 [agent] iteration {iteration}: calling {tool_call['name']}({tool_call['args']})")
-            tool_result = search_tool.invoke(tool_call["args"])
-            print(
-                f"   ↳ status={tool_result.get('status')} "
-                f"result_count={tool_result.get('metadata', {}).get('result_count')}"
-            )
-            messages.append(
-                ToolMessage(
-                    content=json.dumps(tool_result, ensure_ascii=False),
-                    tool_call_id=tool_call["id"],
-                )
-            )
-            if tool_result.get("status") == "success":
-                sources.extend(_citation_to_source(c) for c in tool_result.get("citations", []))
-
-    # Hit the iteration cap: force a plain-text answer, without tools bound,
-    # so the model can't request yet another call and stall the response.
-    print(f"⚠️ [agent] hit max iterations ({_MAX_TOOL_ITERATIONS}), forcing final answer")
-    final_message = llm.invoke(messages)
-    return {"answer": final_message.content, "sources": sources}
+    return {"answer": messages[-1].content, "sources": sources}
 ```
 
 - [ ] **Step 4: Rewrite `backend/app/api/chat.py`**
@@ -647,17 +692,21 @@ git commit -m "Add chat_agent.py and wire POST /api/chat to the LangChain agent"
 **Spec coverage:**
 - `search_uploaded_docs` tool, query embedded inside the tool, fixed JSON response shape → Task 2, verified field-by-field in the test.
 - Agent decides whether to use the tool → Task 3's test explicitly checks both branches (tool used / tool skipped).
-- Agent can call the tool multiple times, not just once → `run_agent_chat()` is a bounded loop (`_MAX_TOOL_ITERATIONS = 3`), not a single fixed round trip; Task 3's third test case exercises a two-part question needing both seeded facts.
-- Server-side tracing of the agent's process → every iteration, tool call (with args), tool result status, and the final "no tool call" / "max iterations hit" branch is printed in `run_agent_chat()`; Task 3's verification step explicitly calls out watching for these trace lines during the real run.
+- Agent can call the tool multiple times, not just once → `run_agent_chat()` uses `langchain.agents.create_agent` (LangGraph ReAct agent), bounded by `recursion_limit = _RECURSION_LIMIT` rather than a single fixed round trip; `GraphRecursionError` is caught for a graceful fallback if the cap is hit. Task 3's third test case exercises a two-part question needing both seeded facts.
+- Server-side tracing of the agent's process → `_print_trace()` walks the full returned message history after each `run_agent_chat()` call and prints every tool call (with args), every tool result's status, and the final answer; Task 3's verification step explicitly calls out watching for these trace lines during the real run.
 - `user_context` accepted but not used for filtering, and — the correctness fix agreed on — never LLM-fillable (only `query` in the bound tool's schema, asserted directly in Task 2's test: `assert list(search_tool.args.keys()) == ["query"]`).
 - Document embedding automatic on upload → untouched, `upload.py` not modified by this plan.
 - `/api/chat` replaced, `/api/chat/stream` untouched → Task 3, `chat_stream()` copied verbatim into the rewritten file.
 - Offline docs / numeric data out of scope → no file in this plan touches `offline_docs_store.py` or `numeric_data_store.py`.
 
 **Placeholder scan:** every step has complete, runnable code — the tool/agent code shown here was
-validated against the actual installed `langchain`/`langchain-core`/`langchain-openai` APIs during
-design (confirmed `@tool` schema inference, `bind_tools`, `tool_calls` shape, `ToolMessage` fields)
-rather than guessed.
+validated against the actual installed `langchain`/`langchain-core`/`langchain-openai`/`langgraph`
+APIs during design (confirmed `@tool` schema inference with a nested-pydantic arg, the closure-based
+per-request tool factory, `create_agent`'s signature, `GraphRecursionError`'s import path) rather
+than guessed. The `openai==1.82.0` → `2.53.0` dependency conflict was discovered by actually running
+the install, not anticipated in advance — and its fix was verified safe by confirming
+`rag/generator.py`'s exact imports and call patterns still work under `2.53.0` before finalizing
+the version bump.
 
 **Type/naming consistency:** `Source` fields (`text`, `document`, `page`, `chunk`, `score`) match
 `app/schemas.py` exactly; `ChatResponse(answer, sources)` is unchanged; `UserContext` field names
