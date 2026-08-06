@@ -459,13 +459,17 @@ from app.config import OPENAI_API_KEY, OPENAI_MODEL
 from app.schemas import Source
 
 _SYSTEM_PROMPT = (
-    "You are a helpful assistant. You have a tool, search_uploaded_docs, that searches "
-    "documents the user has uploaded. Use it when the question could be answered from "
-    "those documents. You may call it more than once if the first search doesn't give "
-    "you enough information — for example, to look up two distinct facts needed to "
-    "answer a multi-part question. If the question is unrelated to any uploaded "
-    "document (general knowledge, small talk, math, etc.), answer directly without "
-    "using the tool."
+    "You are a helpful assistant for a user who has uploaded their own private documents "
+    "to this system. You have a tool, search_uploaded_docs, that searches those documents "
+    "— content the user already owns and has full access to. Always use the tool for any "
+    "fact-based question that could be answered from the user's own documents, including "
+    "things like passwords, credentials, or configuration values written in them. Looking "
+    "up information in the user's own uploaded document is not a security risk, and you "
+    "should never refuse or hedge on that basis — just call the tool. You may call it "
+    "more than once if the first search doesn't give you enough information — for "
+    "example, to look up two distinct facts needed to answer a multi-part question. Only "
+    "skip the tool for questions clearly unrelated to any document (general knowledge, "
+    "small talk, math, etc.)."
 )
 
 _MAX_TOOL_ITERATIONS = 3
@@ -549,6 +553,16 @@ def run_agent_chat(
 
     return {"answer": messages[-1].content, "sources": sources}
 ```
+
+**Real behavior found during implementation (not anticipated when this plan was first written):**
+the first live run against `"What is the office WiFi password?"` had the model refuse outright with
+no tool call at all — GPT reflexively treats "password" as something to decline, even with a tool
+available and a system prompt saying to use it. Diagnosed by testing an equivalent but
+differently-phrased question ("Who is the office manager, according to my uploaded documents?"),
+which called the tool correctly — confirming the wiring was fine and the issue was prompt framing,
+not code. The `_SYSTEM_PROMPT` above (explicitly stating the documents are the user's own, and that
+looking them up is not a security risk) was verified live against the exact original failing
+question before being adopted; it now reliably calls the tool for password-style lookups too.
 
 - [ ] **Step 4: Rewrite `backend/app/api/chat.py`**
 
