@@ -1,63 +1,79 @@
 from __future__ import annotations
-import os
-from functools import lru_cache
 
+from pymilvus import DataType, MilvusClient
 
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
-import chromadb
-from chromadb.config import Settings
-
-from app.config import CHROMA_DIR, COLLECTION_NAME, UPLOAD_DIR
-from app.rag.embeddings import LocalEmbeddingFunction
+from app.config import MILVUS_HOST, MILVUS_PORT, REALTIME_PDF_COLLECTION_NAME
+from app.rag import embeddings
 from app.rag.types import Chunk
 
+_client: MilvusClient | None = None
 
-@lru_cache(maxsize=1)
-def get_collection():
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(
-        path=str(CHROMA_DIR),
-        settings=Settings(anonymized_telemetry=False),
-    )
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=LocalEmbeddingFunction(),
-        metadata={"hnsw:space": "cosine"},
-    )
+
+def get_collection() -> MilvusClient:
+    """Return the shared MilvusClient, creating the realtime PDF collection if needed."""
+    global _client
+    if _client is None:
+        _client = MilvusClient(uri=f"http://{MILVUS_HOST}:{MILVUS_PORT}")
+
+    if not _client.has_collection(REALTIME_PDF_COLLECTION_NAME):
+        dim = len(embeddings.embed_query("dimension probe"))
+
+        schema = _client.create_schema(auto_id=True, enable_dynamic_field=True)
+        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
+        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
+        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=dim)
+        _client.create_collection(collection_name=REALTIME_PDF_COLLECTION_NAME, schema=schema)
+
+        index_params = _client.prepare_index_params()
+        index_params.add_index(field_name="embedding", index_type="AUTOINDEX", metric_type="COSINE")
+        _client.create_index(REALTIME_PDF_COLLECTION_NAME, index_params)
+        _client.load_collection(REALTIME_PDF_COLLECTION_NAME)
+
+    return _client
 
 
 def indexed_file_hashes() -> set[str]:
-    result = get_collection().get(include=["metadatas"])
-    hashes: set[str] = set()
-    for metadata in result.get("metadatas") or []:
-        if metadata and metadata.get("file_hash"):
-            hashes.add(str(metadata["file_hash"]))
-    return hashes
+    client = get_collection()
+    rows = client.query(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        filter="",
+        output_fields=["file_hash"],
+        limit=16384,
+    )
+    return {row["file_hash"] for row in rows if row.get("file_hash")}
 
 
 def add_chunks(chunks: list[Chunk]) -> int:
     if not chunks:
         return 0
 
-    get_collection().upsert(
-        ids=[chunk.id for chunk in chunks],
-        documents=[chunk.text for chunk in chunks],
-        metadatas=[chunk.metadata for chunk in chunks],
-    )
+    client = get_collection()
+    texts = [chunk.text for chunk in chunks]
+    vectors = embeddings.embed_texts(texts)
+
+    data = [
+        {"text": chunk.text, "embedding": vector, **chunk.metadata}
+        for chunk, vector in zip(chunks, vectors)
+    ]
+    client.insert(collection_name=REALTIME_PDF_COLLECTION_NAME, data=data)
+    client.flush(REALTIME_PDF_COLLECTION_NAME)
     return len(chunks)
 
 
 def delete_document(file_hash: str) -> int:
-    collection = get_collection()
-    result = collection.get(where={"file_hash": file_hash})
-    ids = result.get("ids") or []
+    client = get_collection()
+    matches = client.query(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        filter=f'file_hash == "{file_hash}"',
+        output_fields=["id"],
+    )
+    ids = [row["id"] for row in matches]
 
     if not ids:
         return 0
 
-    collection.delete(ids=ids)
+    client.delete(collection_name=REALTIME_PDF_COLLECTION_NAME, ids=ids)
+    client.flush(REALTIME_PDF_COLLECTION_NAME)
     return len(ids)
 
 
@@ -65,69 +81,69 @@ def query_chunks(query: str, top_k: int = 5) -> list[dict]:
     if not query.strip():
         raise ValueError("Query must not be empty.")
 
-    collection = get_collection()
-
-    if collection.count() == 0:
+    client = get_collection()
+    stats = client.get_collection_stats(REALTIME_PDF_COLLECTION_NAME)
+    if int(stats.get("row_count", 0)) == 0:
         return []
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
+    query_vector = embeddings.embed_query(query)
+    results = client.search(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        data=[query_vector],
+        anns_field="embedding",
+        limit=top_k,
+        output_fields=["text", "document_name", "file_hash", "page", "chunk_index"],
     )
 
     retrieved: list[dict] = []
-
-    ids = results.get("ids", [[]])[0]
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    dists = results.get("distances", [[]])[0]
-
-    for chunk_id, text, metadata, distance in zip(ids, docs, metas, dists):
-        retrieved.append(
-            {
-                "id": chunk_id,
-                "text": text,
-                "metadata": metadata,
-                "distance": float(distance) if distance is not None else None,
-                "score": 1 / (1 + float(distance)) if distance is not None else 0.0,
-            }
-        )
+    for hits in results:
+        for hit in hits:
+            entity = hit.get("entity", {})
+            distance = hit.get("distance")
+            retrieved.append(
+                {
+                    "id": hit.get("id"),
+                    "text": entity.get("text"),
+                    "metadata": {
+                        "document_name": entity.get("document_name"),
+                        "file_hash": entity.get("file_hash"),
+                        "page": entity.get("page"),
+                        "chunk_index": entity.get("chunk_index"),
+                    },
+                    "distance": float(distance) if distance is not None else None,
+                    "score": float(distance) if distance is not None else 0.0,
+                }
+            )
 
     return retrieved
 
+
 def list_documents() -> list[dict]:
-    """
-    List indexed documents based on stored chunk metadata.
-    Works even when the collection is empty.
-    """
-    result = get_collection().get(include=["metadatas"])
-    metadatas = result.get("metadatas") or []
+    client = get_collection()
+    rows = client.query(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        filter="",
+        output_fields=["document_name", "file_hash", "page"],
+        limit=16384,
+    )
 
     documents: dict[str, dict] = {}
-
-    for metadata in metadatas:
-        if not metadata:
-            continue
-
-        document_name = metadata.get("document_name")
-        file_hash = metadata.get("file_hash")
-        page = metadata.get("page")
-
+    for row in rows:
+        document_name = row.get("document_name")
         if not document_name:
             continue
 
         if document_name not in documents:
             documents[document_name] = {
                 "document_name": document_name,
-                "file_hash": file_hash,
+                "file_hash": row.get("file_hash"),
                 "pages": set(),
                 "chunks": 0,
             }
 
+        page = row.get("page")
         if page is not None:
             documents[document_name]["pages"].add(page)
-
         documents[document_name]["chunks"] += 1
 
     return [
