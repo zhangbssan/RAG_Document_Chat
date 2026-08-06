@@ -4,7 +4,7 @@
 
 **Goal:** Add a LangChain tool-calling agent that replaces the direct retrieval+generation call in `POST /api/chat`, with one tool (`search_uploaded_docs`) wrapping the existing Milvus-backed `vector_store.py` — per `docs/superpowers/specs/2026-08-06-langchain-agent-layer-design.md`.
 
-**Architecture:** `backend/app/agent/tools.py` holds the tool's core logic and a per-request factory (`make_search_tool`) that binds the real `user_context` via closure so it's never LLM-fillable — only `query` is exposed to the model. `backend/app/agent/chat_agent.py` builds a `ChatOpenAI` bound to that one tool, runs a single request→(optional tool call)→final-answer round trip, and maps the tool's citations onto the existing `Source` schema. `backend/app/api/chat.py`'s `POST /api/chat` calls this instead of `search_sources()`/`answer_question()`; `POST /api/chat/stream` is untouched.
+**Architecture:** `backend/app/agent/tools.py` holds the tool's core logic and a per-request factory (`make_search_tool`) that binds the real `user_context` via closure so it's never LLM-fillable — only `query` is exposed to the model. `backend/app/agent/chat_agent.py` builds a `ChatOpenAI` bound to that one tool and runs a **bounded loop** (max 3 iterations): ask the model, and if it requests tool call(s), execute them, feed results back, and ask again — allowing genuine multi-step tool use (e.g., search once, then search again with a refined query) rather than a single fixed round trip. Every step (question received, each tool call + its args, each tool result's status, final answer) is printed to stdout as a server-side trace, mirroring `ai_orchestrator.py`'s existing trace style. The tool's citations are mapped onto the existing `Source` schema. `backend/app/api/chat.py`'s `POST /api/chat` calls this instead of `search_sources()`/`answer_question()`; `POST /api/chat/stream` is untouched.
 
 **Tech Stack:** `langchain==1.3.14`, `langchain-core==1.5.3`, `langchain-openai==1.4.1` (exact versions verified installed and API-checked against this session — `@tool`-decorated closures, `ChatOpenAI.bind_tools`, `AIMessage.tool_calls`, `ToolMessage` all confirmed working as described below before writing this plan).
 
@@ -318,13 +318,13 @@ git commit -m "Add search_uploaded_docs LangChain tool (query-only LLM schema, u
 
 **Interfaces:**
 - Consumes: `app.agent.tools.UserContext`/`make_search_tool` (Task 2), `app.config.OPENAI_API_KEY`/`OPENAI_MODEL` (existing), `app.schemas.Source` (existing, unchanged shape).
-- Produces: `run_agent_chat(question: str, user_context: dict | None = None, api_key: str | None = None, top_k: int = 5) -> dict` returning `{"answer": str, "sources": list[Source]}`. `chat.py`'s `POST /api/chat` consumes this; `POST /api/chat/stream` is untouched and keeps using `search_sources`/`answer_question_stream` exactly as before.
+- Produces: `run_agent_chat(question: str, user_context: dict | None = None, api_key: str | None = None, top_k: int = 5) -> dict` returning `{"answer": str, "sources": list[Source]}`. Internally loops up to `_MAX_TOOL_ITERATIONS = 3` rounds of tool calling before forcing a final answer, and prints a step-by-step trace to stdout on every call. `chat.py`'s `POST /api/chat` consumes this; `POST /api/chat/stream` is untouched and keeps using `search_sources`/`answer_question_stream` exactly as before.
 
 - [ ] **Step 1: Write the failing test — `scripts/test_chat_agent.py`**
 
 ```python
 #!/usr/bin/env python
-"""Test agent/chat_agent.py end-to-end: the agent decides whether to call the tool."""
+"""Test agent/chat_agent.py end-to-end: tool routing, skipping, and multi-call use."""
 from __future__ import annotations
 
 import os
@@ -354,11 +354,16 @@ def test_chat_agent() -> bool:
             text="The office WiFi password is SkyBlue42.",
             metadata={"document_name": "office_handbook.pdf", "file_hash": "hash1", "page": 3, "chunk_index": 1},
         ),
+        Chunk(
+            id="hash2:p1:c1",
+            text="The office manager's name is Priya Nair.",
+            metadata={"document_name": "office_handbook.pdf", "file_hash": "hash2", "page": 7, "chunk_index": 1},
+        ),
     ]
 
     try:
-        print("\n[1/2] Seeding one chunk, asking a question that needs it...")
-        add_chunks(chunks)
+        print("\n[1/3] Seeding one chunk, asking a question that needs it...")
+        add_chunks(chunks[:1])
 
         result = run_agent_chat("What is the office WiFi password?", user_context={})
         print(f"   Answer: {result['answer']}")
@@ -367,14 +372,27 @@ def test_chat_agent() -> bool:
         assert "SkyBlue42" in result["answer"], f"expected the password in the answer: {result}"
         print("   OK: tool was used, answer is grounded in the document")
 
-        print("\n[2/2] Asking an unrelated question...")
+        print("\n[2/3] Asking an unrelated question...")
         result2 = run_agent_chat("What is 2 + 2?", user_context={})
         print(f"   Answer: {result2['answer']}")
         print(f"   Sources: {result2['sources']}")
         assert result2["sources"] == [], f"expected the tool NOT to be called: {result2}"
         print("   OK: tool was correctly skipped for an unrelated question")
 
-        print("\nPASSED: chat_agent.py routes to the tool only when needed.")
+        print("\n[3/3] Asking a two-part question needing two distinct facts...")
+        add_chunks(chunks[1:])
+        result3 = run_agent_chat(
+            "What is the office WiFi password, and what is the office manager's name?",
+            user_context={},
+        )
+        print(f"   Answer: {result3['answer']}")
+        print(f"   Sources: {result3['sources']}")
+        assert len(result3["sources"]) >= 2, f"expected multiple tool results (parallel or looped): {result3}"
+        assert "SkyBlue42" in result3["answer"], f"expected the WiFi password in the answer: {result3}"
+        assert "Priya Nair" in result3["answer"], f"expected the manager's name in the answer: {result3}"
+        print("   OK: agent gathered both facts, whether via one multi-hit search, parallel calls, or a loop")
+
+        print("\nPASSED: chat_agent.py routes to the tool only when needed, and can use it more than once.")
         return True
 
     except AssertionError as e:
@@ -418,9 +436,14 @@ from app.schemas import Source
 _SYSTEM_PROMPT = (
     "You are a helpful assistant. You have a tool, search_uploaded_docs, that searches "
     "documents the user has uploaded. Use it when the question could be answered from "
-    "those documents. If the question is unrelated to any uploaded document (general "
-    "knowledge, small talk, math, etc.), answer directly without using the tool."
+    "those documents. You may call it more than once in the same turn if the first "
+    "search doesn't give you enough information — for example, to look up two distinct "
+    "facts needed to answer a multi-part question. If the question is unrelated to any "
+    "uploaded document (general knowledge, small talk, math, etc.), answer directly "
+    "without using the tool."
 )
+
+_MAX_TOOL_ITERATIONS = 3
 
 
 def _citation_to_source(citation: dict) -> Source:
@@ -439,6 +462,8 @@ def run_agent_chat(
     api_key: str | None = None,
     top_k: int = 5,
 ) -> dict:
+    print(f"🧑 [agent] question: {question!r}")
+
     ctx = UserContext(**(user_context or {}))
     search_tool = make_search_tool(ctx, top_k=top_k)
 
@@ -446,15 +471,24 @@ def run_agent_chat(
     llm_with_tools = llm.bind_tools([search_tool])
 
     messages = [SystemMessage(content=_SYSTEM_PROMPT), HumanMessage(content=question)]
-    ai_message = llm_with_tools.invoke(messages)
-
     sources: list[Source] = []
 
-    if ai_message.tool_calls:
+    for iteration in range(1, _MAX_TOOL_ITERATIONS + 1):
+        ai_message = llm_with_tools.invoke(messages)
+
+        if not ai_message.tool_calls:
+            print(f"🤖 [agent] iteration {iteration}: no tool call, final answer")
+            return {"answer": ai_message.content, "sources": sources}
+
         messages.append(ai_message)
 
         for tool_call in ai_message.tool_calls:
+            print(f"🔧 [agent] iteration {iteration}: calling {tool_call['name']}({tool_call['args']})")
             tool_result = search_tool.invoke(tool_call["args"])
+            print(
+                f"   ↳ status={tool_result.get('status')} "
+                f"result_count={tool_result.get('metadata', {}).get('result_count')}"
+            )
             messages.append(
                 ToolMessage(
                     content=json.dumps(tool_result, ensure_ascii=False),
@@ -464,12 +498,11 @@ def run_agent_chat(
             if tool_result.get("status") == "success":
                 sources.extend(_citation_to_source(c) for c in tool_result.get("citations", []))
 
-        final_message = llm_with_tools.invoke(messages)
-        answer = final_message.content
-    else:
-        answer = ai_message.content
-
-    return {"answer": answer, "sources": sources}
+    # Hit the iteration cap: force a plain-text answer, without tools bound,
+    # so the model can't request yet another call and stall the response.
+    print(f"⚠️ [agent] hit max iterations ({_MAX_TOOL_ITERATIONS}), forcing final answer")
+    final_message = llm.invoke(messages)
+    return {"answer": final_message.content, "sources": sources}
 ```
 
 - [ ] **Step 4: Rewrite `backend/app/api/chat.py`**
@@ -586,13 +619,18 @@ def chat_stream(request: ChatRequest):
 cd /Users/baoshuangzhang/Desktop/Agentic_RAG/agentic_rag/00_RAG_Document_Chat
 backend/.venv/bin/python3 scripts/test_chat_agent.py
 ```
-Expected: `PASSED: chat_agent.py routes to the tool only when needed.`, exit 0. **Requires a valid
-`OPENAI_API_KEY` in `.env`** — this is the test that actually calls the LLM.
+Expected: `PASSED: chat_agent.py routes to the tool only when needed, and can use it more than once.`,
+exit 0. **Requires a valid `OPENAI_API_KEY` in `.env`** — this is the test that actually calls the
+LLM. Watch the console output during this run — you should see the `🧑`/`🤖`/`🔧`/`↳` trace lines
+for each of the three questions, confirming the tracing works end to end, not just that assertions
+pass.
 
-Note: step 2 of the test (asserting the tool is *not* called for "What is 2 + 2?") depends on the
-model's judgment — it is expected to reliably skip the tool for an obviously unrelated question,
-but if this specific assertion ever flakes, it's a prompt-tuning issue in `_SYSTEM_PROMPT`, not a
-sign the wiring is broken; re-run once before investigating further.
+Note: steps 2 and 3 of the test depend on the model's judgment (whether/how many times it calls the
+tool) — step 2 is expected to reliably skip the tool for an obviously unrelated question, and step 3
+is expected to surface both seeded facts one way or another (a single search returning both hits,
+parallel tool calls, or a second loop iteration all satisfy the assertion). If either ever flakes,
+it's a prompt-tuning issue in `_SYSTEM_PROMPT`, not a sign the wiring or the loop itself is broken;
+re-run once before investigating further.
 
 - [ ] **Step 6: Commit**
 
@@ -609,6 +647,8 @@ git commit -m "Add chat_agent.py and wire POST /api/chat to the LangChain agent"
 **Spec coverage:**
 - `search_uploaded_docs` tool, query embedded inside the tool, fixed JSON response shape → Task 2, verified field-by-field in the test.
 - Agent decides whether to use the tool → Task 3's test explicitly checks both branches (tool used / tool skipped).
+- Agent can call the tool multiple times, not just once → `run_agent_chat()` is a bounded loop (`_MAX_TOOL_ITERATIONS = 3`), not a single fixed round trip; Task 3's third test case exercises a two-part question needing both seeded facts.
+- Server-side tracing of the agent's process → every iteration, tool call (with args), tool result status, and the final "no tool call" / "max iterations hit" branch is printed in `run_agent_chat()`; Task 3's verification step explicitly calls out watching for these trace lines during the real run.
 - `user_context` accepted but not used for filtering, and — the correctness fix agreed on — never LLM-fillable (only `query` in the bound tool's schema, asserted directly in Task 2's test: `assert list(search_tool.args.keys()) == ["query"]`).
 - Document embedding automatic on upload → untouched, `upload.py` not modified by this plan.
 - `/api/chat` replaced, `/api/chat/stream` untouched → Task 3, `chat_stream()` copied verbatim into the rewritten file.
