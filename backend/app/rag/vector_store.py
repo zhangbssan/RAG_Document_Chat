@@ -74,24 +74,12 @@ def delete_document(file_hash: str) -> int:
     return len(ids)
 
 
-def query_chunks(query: str, top_k: int = 5) -> list[dict]:
-    if not query.strip():
-        raise ValueError("Query must not be empty.")
+_SEARCH_OUTPUT_FIELDS = ["text", "document_name", "file_hash", "page", "chunk_index", "chunk_seq"]
 
-    client = get_collection()
-    stats = client.get_collection_stats(REALTIME_PDF_COLLECTION_NAME)
-    if int(stats.get("row_count", 0)) == 0:
-        return []
 
-    query_vector = embeddings.embed_query(query)
-    results = client.search(
-        collection_name=REALTIME_PDF_COLLECTION_NAME,
-        data=[query_vector],
-        anns_field="embedding",
-        limit=top_k,
-        output_fields=["text", "document_name", "file_hash", "page", "chunk_index"],
-    )
-
+def _hits_from_search_results(results) -> list[dict]:
+    """Flatten a Milvus search() response (list[list[hit]]) into the shared hit
+    shape used by both dense (query_chunks) and sparse (sparse_search) search."""
     retrieved: list[dict] = []
     for hits in results:
         for hit in hits:
@@ -106,13 +94,74 @@ def query_chunks(query: str, top_k: int = 5) -> list[dict]:
                         "file_hash": entity.get("file_hash"),
                         "page": entity.get("page"),
                         "chunk_index": entity.get("chunk_index"),
+                        "chunk_seq": entity.get("chunk_seq"),
                     },
                     "distance": float(distance) if distance is not None else None,
                     "score": float(distance) if distance is not None else 0.0,
                 }
             )
-
     return retrieved
+
+
+def query_chunks(query: str, top_k: int = 5) -> list[dict]:
+    """Dense (embedding) search."""
+    if not query.strip():
+        raise ValueError("Query must not be empty.")
+
+    client = get_collection()
+    stats = client.get_collection_stats(REALTIME_PDF_COLLECTION_NAME)
+    if int(stats.get("row_count", 0)) == 0:
+        return []
+
+    query_vector = embeddings.embed_query(query)
+    results = client.search(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        data=[query_vector],
+        anns_field="embedding",
+        limit=top_k,
+        output_fields=_SEARCH_OUTPUT_FIELDS,
+    )
+    return _hits_from_search_results(results)
+
+
+def sparse_search(query: str, top_k: int = 5) -> list[dict]:
+    """BM25 full-text search via Milvus's native `sparse_vector` Function field
+    (see hybrid_schema.py). Milvus tokenizes and BM25-scores `query` itself —
+    unlike query_chunks(), no local embedding call is made here."""
+    if not query.strip():
+        raise ValueError("Query must not be empty.")
+
+    client = get_collection()
+    stats = client.get_collection_stats(REALTIME_PDF_COLLECTION_NAME)
+    if int(stats.get("row_count", 0)) == 0:
+        return []
+
+    results = client.search(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        data=[query],
+        anns_field="sparse_vector",
+        limit=top_k,
+        output_fields=_SEARCH_OUTPUT_FIELDS,
+    )
+    return _hits_from_search_results(results)
+
+
+def get_chunks_by_seq(file_hash: str, chunk_seqs: list[int]) -> list[dict]:
+    """Fetch specific chunks of one document by chunk_seq — used to build an
+    anchor's ±window context. Returns flat rows (same convention as
+    indexed_file_hashes()/list_documents()), not the nested search() shape."""
+    if not chunk_seqs:
+        return []
+
+    client = get_collection()
+    seq_list = ",".join(str(seq) for seq in chunk_seqs)
+    return client.query(
+        collection_name=REALTIME_PDF_COLLECTION_NAME,
+        filter=f'file_hash == "{file_hash}" && chunk_seq in [{seq_list}]',
+        output_fields=["id", "text", "document_name", "file_hash", "page", "chunk_index", "chunk_seq"],
+        limit=len(chunk_seqs),
+        consistency_level="Strong",
+    )
 
 
 def list_documents() -> list[dict]:
