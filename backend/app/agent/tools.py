@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 from langchain_core.tools import BaseTool, tool
 
-from app.rag.vector_store import query_chunks
+from app.rag.hybrid_search import hybrid_search
 
 
 class UserContext(BaseModel):
@@ -14,11 +14,13 @@ class UserContext(BaseModel):
 
 
 def _search_uploaded_docs_impl(query: str, user_context: UserContext, top_k: int = 5) -> dict:
-    """Core search logic. user_context is accepted for a future permission/scoping
-    layer but is NOT used to filter results yet — search always queries the single
-    shared realtime_pdf_collection, per the current storage-layer design."""
+    """Core search logic. Hybrid (dense + BM25) retrieval, RRF-fused, and expanded
+    into anchor-centered context blocks — see app.rag.hybrid_search.hybrid_search().
+    user_context is accepted for a future permission/scoping layer but is NOT used
+    to filter results yet — search always queries the single shared
+    realtime_pdf_collection, per the current storage-layer design."""
     try:
-        results = query_chunks(query, top_k=top_k)
+        blocks = hybrid_search(query, dense_top_k=top_k, sparse_top_k=top_k)
     except Exception as e:
         return {
             "status": "error",
@@ -30,19 +32,20 @@ def _search_uploaded_docs_impl(query: str, user_context: UserContext, top_k: int
 
     citations = []
     content_parts = []
-    for hit in results:
-        metadata = hit.get("metadata", {})
-        file_hash = metadata.get("file_hash")
-        page = metadata.get("page")
-        chunk_index = metadata.get("chunk_index")
-        text = hit.get("text", "")
+    for block in blocks:
+        metadata = block.get("metadata", {})
+        text = block.get("text", "")
 
         citations.append(
             {
-                "source_id": file_hash,
+                "source_id": metadata.get("file_hash"),
                 "source_name": metadata.get("document_name"),
-                "page": page,
-                "chunk_id": f"{file_hash}:p{page}:c{chunk_index}",
+                "page": metadata.get("page_start"),
+                "page_start": metadata.get("page_start"),
+                "page_end": metadata.get("page_end"),
+                "pages": metadata.get("pages"),
+                "chunk_id": block.get("id"),
+                "link": block.get("link"),
                 "text": text,
             }
         )

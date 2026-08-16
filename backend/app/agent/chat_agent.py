@@ -36,8 +36,10 @@ def _citation_to_source(citation: dict) -> Source:
         text=citation.get("text", ""),
         document=citation.get("source_name") or "Unknown",
         page=citation.get("page") if citation.get("page") is not None else "?",
+        pages=citation.get("pages"),
         chunk=citation.get("chunk_id") or "?",
         score=None,
+        link=citation.get("link"),
     )
 
 
