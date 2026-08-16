@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from pymilvus import DataType, MilvusClient
+from pymilvus import MilvusClient
 
 from app.config import MILVUS_HOST, MILVUS_PORT, REALTIME_PDF_COLLECTION_NAME
 from app.rag import embeddings
+from app.rag.hybrid_schema import build_realtime_pdf_index_params, build_realtime_pdf_schema
 from app.rag.types import Chunk
 
 _client: MilvusClient | None = None
@@ -18,14 +19,10 @@ def get_collection() -> MilvusClient:
     if not _client.has_collection(REALTIME_PDF_COLLECTION_NAME):
         dim = len(embeddings.embed_query("dimension probe"))
 
-        schema = _client.create_schema(auto_id=True, enable_dynamic_field=True)
-        schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
-        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=65535)
-        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = build_realtime_pdf_schema(_client, dim=dim)
         _client.create_collection(collection_name=REALTIME_PDF_COLLECTION_NAME, schema=schema)
 
-        index_params = _client.prepare_index_params()
-        index_params.add_index(field_name="embedding", index_type="AUTOINDEX", metric_type="COSINE")
+        index_params = build_realtime_pdf_index_params(_client)
         _client.create_index(REALTIME_PDF_COLLECTION_NAME, index_params)
         _client.load_collection(REALTIME_PDF_COLLECTION_NAME)
 
