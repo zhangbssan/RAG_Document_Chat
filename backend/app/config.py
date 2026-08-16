@@ -20,7 +20,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 TOP_K = int(os.getenv("TOP_K", "5"))
-RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))
 SPARSE_TOP_K = int(os.getenv("SPARSE_TOP_K", str(TOP_K)))
 ANCHOR_TOP_N = int(os.getenv("ANCHOR_TOP_N", "2"))
 ANCHOR_WINDOW = int(os.getenv("ANCHOR_WINDOW", "1"))

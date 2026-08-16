@@ -9,6 +9,8 @@ class Source(BaseModel):
     page: int | str
     chunk: int | str
     score: float | None = None
+    pages: list[int] | None = None
+    link: str | None = None
 
 
 class ChatRequest(BaseModel):
