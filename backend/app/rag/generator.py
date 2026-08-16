@@ -14,18 +14,27 @@ def format_context(sources: list[Source]) -> str:
     """Format sources into a context string for the LLM."""
     if not sources:
         return ""
-    
+
     blocks = []
     for index, source in enumerate(sources, start=1):
-        source_ref = f"[{source.document}-P{source.page}-S{source.chunk}]"
+        page_label = _page_label(source)
+        source_ref = f"[{source.document}-P{page_label}-S{source.chunk}]"
+        link_line = f"Link: {source.link}\n" if source.link else ""
         blocks.append(
             f"{source_ref}\n"
             f"Document: {source.document}\n"
-            f"Page: {source.page}\n"
+            f"Page: {page_label}\n"
+            f"{link_line}"
             f"Clause: {source.chunk}\n"
             f"Content: {source.text}"
         )
     return "\n\n".join(blocks)
+
+
+def _page_label(source: Source) -> str:
+    if source.pages and len(source.pages) > 1:
+        return f"{source.pages[0]}-{source.pages[-1]}"
+    return str(source.page)
 
 
 def _validate_question(question: str) -> None:
@@ -167,15 +176,17 @@ def fallback_answer(sources: list[Source]) -> str:
         if len(source.text) > 500:
             excerpt += "..."
         
-        citation = f"[{source.document}-P{source.page}-S{source.chunk}]"
+        page_label = _page_label(source)
+        citation = f"[{source.document}-P{page_label}-S{source.chunk}]"
         score_text = (
             f" (Rank score: {source.score:.4f})"
             if source.score is not None
             else ""
         )
-        
+        link_text = f" ({source.link})" if source.link else ""
+
         lines.append(
-            f"\n**Source {i}:** {citation}{score_text}\n"
+            f"\n**Source {i}:** {citation}{score_text}{link_text}\n"
             f">>> {excerpt}"
         )
     

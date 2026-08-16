@@ -289,9 +289,11 @@ def render_source_items(sources: list[dict]) -> None:
             # Source header
             cols = st.columns([3, 1])
             with cols[0]:
+                pages = source.get("pages")
+                page_label = f"{pages[0]}-{pages[-1]}" if pages and len(pages) > 1 else source['page']
                 st.markdown(
                     f"**Source {i}:** {source['document']} | "
-                    f"Page {source['page']} | "
+                    f"Page {page_label} | "
                     f"Clause {source['chunk']}"
                 )
             with cols[1]:
@@ -304,6 +306,8 @@ def render_source_items(sources: list[dict]) -> None:
                 f"> {source['text'][:400]}"
                 + ("..." if len(source['text']) > 400 else "")
             )
+            if source.get("link"):
+                st.caption(f"🔗 {source['link']}")
             st.divider()
 
 

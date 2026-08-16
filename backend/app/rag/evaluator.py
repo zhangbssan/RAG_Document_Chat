@@ -64,7 +64,10 @@ def _page_hit_score(
 
     expected_page_text = str(expected_page)
     for chunk in retrieved_chunks:
-        if chunk.document == expected_document and str(chunk.page) == expected_page_text:
+        if chunk.document != expected_document:
+            continue
+        pages = chunk.pages if chunk.pages else [chunk.page]
+        if any(str(page) == expected_page_text for page in pages):
             return 1.0
 
     return 0.0
