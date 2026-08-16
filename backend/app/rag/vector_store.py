@@ -146,22 +146,34 @@ def sparse_search(query: str, top_k: int = 5) -> list[dict]:
     return _hits_from_search_results(results)
 
 
+_CHUNKS_BY_SEQ_OUTPUT_FIELDS = ["id", "text", "document_name", "file_hash", "page", "chunk_index", "chunk_seq"]
+
+
 def get_chunks_by_seq(file_hash: str, chunk_seqs: list[int]) -> list[dict]:
     """Fetch specific chunks of one document by chunk_seq — used to build an
     anchor's ±window context. Returns flat rows (same convention as
-    indexed_file_hashes()/list_documents()), not the nested search() shape."""
+    indexed_file_hashes()/list_documents()), not the nested search() shape.
+
+    Rows are materialized into plain dicts immediately: pymilvus's per-row
+    query() result is a lazy/stateful object whose `in` / `.get()` do not
+    reliably reflect its own data (confirmed directly — `dict(row)` always
+    showed every requested field present while `field in row` and
+    `row.get(field)` read those exact same fields as absent on the same
+    instance). Converting once, up front, avoids depending on that object's
+    unreliable accessors anywhere downstream."""
     if not chunk_seqs:
         return []
 
     client = get_collection()
     seq_list = ",".join(str(seq) for seq in chunk_seqs)
-    return client.query(
+    rows = client.query(
         collection_name=REALTIME_PDF_COLLECTION_NAME,
         filter=f'file_hash == "{file_hash}" && chunk_seq in [{seq_list}]',
-        output_fields=["id", "text", "document_name", "file_hash", "page", "chunk_index", "chunk_seq"],
+        output_fields=_CHUNKS_BY_SEQ_OUTPUT_FIELDS,
         limit=len(chunk_seqs),
         consistency_level="Strong",
     )
+    return [dict(row) for row in rows]
 
 
 def list_documents() -> list[dict]:

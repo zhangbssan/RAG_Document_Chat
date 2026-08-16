@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.config import CHUNK_OVERLAP
+from app.config import ANCHOR_TOP_N, ANCHOR_WINDOW, CHUNK_OVERLAP, SPARSE_TOP_K, TOP_K
+from app.rag.vector_store import get_chunks_by_seq, query_chunks, sparse_search
 
 RRF_K = 60
 _MIN_TEXT_OVERLAP_CHARS = 20
@@ -161,3 +162,55 @@ def _anchor_to_row(anchor: dict[str, Any]) -> dict[str, Any]:
         "chunk_index": metadata.get("chunk_index"),
         "chunk_seq": metadata.get("chunk_seq"),
     }
+
+
+def _fetch_context_chunks(needed: dict[str, set[int]]) -> dict[str, list[dict[str, Any]]]:
+    """For each document, fetch the needed chunks and sort them by chunk_seq."""
+    chunks_by_doc: dict[str, list[dict[str, Any]]] = {}
+    for file_hash, seqs in needed.items():
+        rows = get_chunks_by_seq(file_hash, sorted(seqs))
+        rows.sort(key=lambda r: r["chunk_seq"])
+        chunks_by_doc[file_hash] = rows
+    return chunks_by_doc
+
+
+def hybrid_search(
+    query: str,
+    dense_top_k: int = TOP_K,
+    sparse_top_k: int = SPARSE_TOP_K,
+    anchor_top_n: int = ANCHOR_TOP_N,
+    window: int = ANCHOR_WINDOW,
+) -> list[dict[str, Any]]:
+    """Dense + BM25 hybrid retrieval, RRF-fused, expanded into anchor-centered
+    context blocks. See docs/superpowers/specs/2026-08-16-hybrid-query-retrieval-design.md."""
+    if not query.strip():
+        raise ValueError("Query must not be empty.")
+
+    dense_hits = query_chunks(query, top_k=dense_top_k)
+    sparse_hits = sparse_search(query, top_k=sparse_top_k)
+    fused = _rrf_fuse(dense_hits, sparse_hits)
+    anchors = _select_anchors(fused, anchor_top_n)
+    if not anchors:
+        return []
+
+    anchor_scores = {anchor["id"]: anchor["rrf_score"] for anchor in anchors}
+
+    # Anchors that carry a chunk_seq get their ±window neighbours fetched and
+    # merged; anchors with no chunk_seq degrade to a single-chunk block built
+    # directly from the anchor (see spec §8).
+    seq_anchors = [a for a in anchors if a["metadata"].get("chunk_seq") is not None]
+    bare_anchors = [a for a in anchors if a["metadata"].get("chunk_seq") is None]
+
+    needed = _anchor_windows(seq_anchors, window)
+    chunks_by_doc = _fetch_context_chunks(needed)
+
+    blocks: list[dict[str, Any]] = []
+    for rows in chunks_by_doc.values():
+        for run in _merge_intervals(rows):
+            blocks.append(_build_block(run, anchor_scores))
+
+    for anchor in bare_anchors:
+        blocks.append(_build_block([_anchor_to_row(anchor)], anchor_scores))
+
+    blocks.sort(key=lambda b: (b["metadata"]["file_hash"], b["metadata"]["chunk_seq_start"] or 0))
+    return blocks

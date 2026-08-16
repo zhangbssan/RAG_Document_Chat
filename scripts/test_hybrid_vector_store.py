@@ -8,7 +8,6 @@ import math
 import os
 import re
 import sys
-import time
 from pathlib import Path
 
 _backend_dir = Path(__file__).resolve().parents[1] / "backend"
@@ -39,23 +38,6 @@ embedding_module.embed_query = lambda q: _test_embed([q])[0]
 
 from app.rag.types import Chunk
 from app.rag.vector_store import add_chunks, get_chunks_by_seq, get_collection, query_chunks, sparse_search
-
-
-def _get_chunks_by_seq_until(file_hash: str, chunk_seqs: list[int], expected_rows: int, attempts: int = 20, delay: float = 0.25) -> list[dict]:
-    """Poll get_chunks_by_seq() until every row carries chunk_seq.
-
-    Right after add_chunks()'s insert+flush, a query for dynamic fields can race the
-    write on Milvus's default consistency level and momentarily return rows missing
-    dynamic fields like chunk_seq (documented in test_vector_store_milvus.py's
-    _query_until()). Condition-based polling, not a fixed sleep or a single attempt.
-    """
-    last_rows: list[dict] = []
-    for _ in range(attempts):
-        last_rows = get_chunks_by_seq(file_hash, chunk_seqs)
-        if len(last_rows) == expected_rows and all("chunk_seq" in row for row in last_rows):
-            return last_rows
-        time.sleep(delay)
-    return last_rows
 
 
 def test_hybrid_vector_store() -> bool:
@@ -103,7 +85,7 @@ def test_hybrid_vector_store() -> bool:
         print(f"   OK: top sparse hit is chunk_seq=3: {sparse_results[0]['text'][:50]}...")
 
         print("\n[4/4] get_chunks_by_seq() fetches an anchor's neighbours by chunk_seq...")
-        window = _get_chunks_by_seq_until("hash1", [1, 2], expected_rows=2)
+        window = get_chunks_by_seq("hash1", [1, 2])
         assert len(window) == 2, f"expected 2 rows, got {window}"
         window.sort(key=lambda r: r["chunk_seq"])
         assert [r["chunk_seq"] for r in window] == [1, 2], f"expected chunk_seq [1, 2], got: {window}"
