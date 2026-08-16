@@ -4,7 +4,7 @@
 
 RAG Document Chat is a lightweight Business RAG application for querying uploaded business PDFs with source-grounded answers.
 
-It is designed for business-style PDF documents such as agreements, manuals, handbooks, and policies. The backend is built with FastAPI and the frontend is built with Streamlit. PDF text is extracted with PyMuPDF, split into overlapping chunks, embedded with sentence-transformers, stored in ChromaDB, retrieved with dense search plus lightweight reranking, and then used for OpenAI-based or extractive fallback answers.
+It is designed for business-style PDF documents such as agreements, manuals, handbooks, and policies. The backend is built with FastAPI and the frontend is built with Streamlit. PDF text is extracted with PyMuPDF, split into overlapping chunks, embedded with sentence-transformers, stored in Milvus, retrieved with hybrid dense+BM25 search fused via Reciprocal Rank Fusion and expanded into anchor-centered context blocks, and then used for OpenAI-based or extractive fallback answers.
 
 The chat feature works with uploaded text-based PDFs. The evaluation feature is a fixed retrieval benchmark for the included sample documents.
 
@@ -18,14 +18,14 @@ A public demo is available here: [Cloud Run Demo](https://ragdocumentchatfronten
 | Requirement | Status | Implementation |
 | --- | --- | --- |
 | Upload-Feld fur PDFs, mehrere gleichzeitig | Implemented | Streamlit sidebar supports uploading multiple PDF files. Backend validates `.pdf` filenames and enforces `MAX_UPLOAD_SIZE_MB`. |
-| Chunking, Embedding und Vektordatenbank | Implemented | PyMuPDF extracts text page by page. Text is split into overlapping chunks. Chunks are embedded with sentence-transformers and stored in persistent ChromaDB with metadata. |
+| Chunking, Embedding und Vektordatenbank | Implemented | PyMuPDF extracts text page by page. Text is split into overlapping chunks. Chunks are embedded with sentence-transformers and stored in Milvus with metadata. |
 | Chat-Interface mit Antworten inkl. Quellenangabe | Implemented | Streamlit chat sends questions to FastAPI. Answers include sources with document name, page, chunk/section, excerpt, and rank score. |
 | 5 hartcodierte Testfragen mit erwarteten Antworten und Retrieval-Score | Implemented | Evaluation uses five hardcoded test cases with expected answer, expected document, expected page, and expected keywords. Scores are visible in the Streamlit Evaluation tab. |
 | FastAPI Backend, Frontend frei wahlbar | Implemented | FastAPI backend and Streamlit frontend. |
 | Lauffahig via Docker Compose | Implemented | `docker compose up --build` starts backend and frontend together. |
 | README explains chunking strategy and retrieval quality | Implemented | See "Chunking Strategy and Retrieval Quality". |
 | Bonus: Streaming-Antworten | Implemented | `/api/chat/stream` sends sources first, then streams answer tokens as NDJSON. |
-| Bonus: Re-Ranking der retrieved Chunks | Implemented | Dense ChromaDB candidates are reranked using lexical overlap and Reciprocal Rank Fusion. |
+| Bonus: Re-Ranking der retrieved Chunks | Implemented | Dense and BM25-sparse Milvus candidates are fused with Reciprocal Rank Fusion, then expanded into anchor-centered ±1 chunk context blocks. |
 | Bonus: Public deployment | Implemented | A Cloud Run demo is available for quick testing. Docker Compose remains the recommended local setup. |
 
 ## Architecture
@@ -45,13 +45,15 @@ This metadata allows the app to show which document, page, and text section each
 
 - FastAPI backend
 - Streamlit frontend
-- ChromaDB persistent vector database
+- Milvus vector database
 - sentence-transformers embeddings
 - PyMuPDF for PDF text extraction
 - OpenAI API for optional LLM answer generation
 - Docker Compose for running backend and frontend together
 
 ## Quick Start with Docker Compose
+
+Requires a Milvus server reachable at `MILVUS_HOST`/`MILVUS_PORT` (see [Environment Variables](#environment-variables)); `docker-compose.yml` in this repo only defines the `backend` and `frontend` services, so Milvus must already be running separately (e.g. via its own `docker compose up` from a Milvus install) and reachable from the backend container.
 
 From the repository root:
 
@@ -106,13 +108,17 @@ The backend loads environment variables from `.env` and Docker Compose also pass
 | `EMBEDDING_MODEL` | Defaults to `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. |
 | `CHUNK_SIZE` | Defaults to `950` characters. |
 | `CHUNK_OVERLAP` | Defaults to `180` characters. |
-| `TOP_K` | Defaults to `5`; number of dense candidates retrieved from ChromaDB. |
-| `RERANK_TOP_K` | Defaults to `3`; number of reranked chunks returned to chat/evaluation. |
+| `TOP_K` | Defaults to `5`; number of dense candidates retrieved from Milvus. |
+| `SPARSE_TOP_K` | Defaults to `TOP_K`'s value; number of BM25 sparse candidates retrieved from Milvus. |
+| `ANCHOR_TOP_N` | Defaults to `2`; number of RRF-fused anchor chunks expanded into context blocks. |
+| `ANCHOR_WINDOW` | Defaults to `1`; how many chunk_seq neighbours are fetched on each side of an anchor. |
 | `MAX_UPLOAD_SIZE_MB` | Defaults to `200`; backend upload size limit per file. |
-| `CHROMA_DIR` | Defaults to backend data directory; Docker uses `/app/data/chroma`. |
 | `UPLOAD_DIR` | Defaults to backend data directory; Docker uses `/app/data/uploads`. |
+| `MILVUS_HOST` | Defaults to `127.0.0.1`; host of the Milvus server used for chunk storage/retrieval. |
+| `MILVUS_PORT` | Defaults to `19530`. |
+| `REALTIME_PDF_COLLECTION_NAME` | Defaults to `realtime_pdf_collection`; Milvus collection used for uploaded PDF chunks. |
 
-There is no `USE_RERANKER` switch in the current code. Reranking is part of the normal retrieval pipeline. There is no `RERANK_INITIAL_K`; the current implementation uses `TOP_K` for initial dense retrieval and `RERANK_TOP_K` for the final reranked output.
+There is no `USE_RERANKER` switch in the current code — hybrid retrieval (dense + BM25, RRF-fused) is the normal retrieval pipeline. `TOP_K`/`SPARSE_TOP_K` control the initial dense/sparse candidate breadth; `ANCHOR_TOP_N`/`ANCHOR_WINDOW` control how many anchors are expanded into context blocks and how wide each block's window is.
 
 ## Usage
 
@@ -147,7 +153,7 @@ The benchmark is designed for the sample English PDFs in `sample_docs/`:
 
 **Upload these sample PDFs before running evaluation.** The UI displays the required sample documents and warns if any are missing. Scores may be low or zero when the sample documents are not indexed.
 
-Evaluation is read-only. It uses the same current ChromaDB collection as chat, does not upload sample PDFs automatically, does not delete documents, and does not create a separate collection.
+Evaluation is read-only. It uses the same current Milvus collection as chat, does not upload sample PDFs automatically, does not delete documents, and does not create a separate collection.
 
 With the three English sample PDFs uploaded, the current local evaluation example score is `0.84` average final score across the five hardcoded questions.
 
@@ -184,16 +190,17 @@ Trade-offs:
 - Larger chunks preserve more context, but can reduce retrieval precision because irrelevant text is mixed into the same vector.
 - More overlap improves continuity across chunks, but increases index size and duplicate text.
 
-## Retrieval and Reranking
+## Hybrid Retrieval
 
-The retrieval pipeline has two stages:
+The retrieval pipeline is one shared hybrid core (`backend/app/rag/hybrid_search.py`), used by both the streaming chat path and the agent's search tool:
 
-1. ChromaDB dense retrieval returns an initial candidate set using sentence-transformers embeddings.
-2. A lightweight lexical reranker compares query keywords with candidate chunk text, computes lexical overlap, and fuses dense rank with lexical rank using Reciprocal Rank Fusion.
+1. Milvus dense (embedding) search and Milvus-native BM25 full-text search each return their own ranked candidate set, independently.
+2. The two lists are deduplicated by chunk id and fused with Reciprocal Rank Fusion.
+3. The top `ANCHOR_TOP_N` fused chunks become anchors; each anchor's `±ANCHOR_WINDOW` neighbouring chunks (by document-global `chunk_seq`, not page-local `chunk_index`) are fetched and merged into a context block, with duplicate text stripped between same-page neighbours.
 
-The final top chunks are passed to the answer generator and shown as sources in the UI.
+Each block is passed to the answer generator and shown as a source in the UI, with a citable `doc:<file_hash>#p<page_range>` link back to its exact span.
 
-Displayed source scores are rank scores from the reranking step. They are not similarity percentages.
+Displayed source scores are RRF fusion scores from the hybrid retrieval step. They are not similarity percentages.
 
 ## Streaming Answers
 
