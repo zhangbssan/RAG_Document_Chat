@@ -40,7 +40,7 @@ def find_split_point(window: str, min_split: int) -> int:
 
     return len(window)
 
-
+## chunking strategy
 def chunk_text(
     text: str,
     chunk_size: int = CHUNK_SIZE,
@@ -61,7 +61,7 @@ def chunk_text(
 
     if overlap >= chunk_size:
         raise ValueError("overlap must be smaller than chunk_size")
-
+    
     text = normalize_text(text)
 
     if not text:
@@ -109,10 +109,14 @@ def build_chunks_from_pages(
     Output:
         list[Chunk] for embedding and vector storage
 
-    Each chunk keeps metadata for source citation:
-    document name, file hash, page number, and chunk index.
+    Each chunk keeps metadata for source citation: document name, file hash,
+    page number, and two positional counters — chunk_index (position within
+    its page, resets to 1 at each page boundary) and chunk_seq (position
+    within the whole document, monotonic 1..N across all pages, scoped per
+    upload — a new document's chunk_seq always starts at 1).
     """
     chunks: list[Chunk] = []
+    chunk_seq = 0
 
     for page in pages:
         page_chunks = chunk_text(
@@ -122,6 +126,7 @@ def build_chunks_from_pages(
         )
 
         for chunk_index, chunk_content in enumerate(page_chunks, start=1):
+            chunk_seq += 1
             chunk_id = f"{page.file_hash}:p{page.page}:c{chunk_index}"
 
             chunks.append(
@@ -133,6 +138,7 @@ def build_chunks_from_pages(
                         "file_hash": page.file_hash,
                         "page": page.page,
                         "chunk_index": chunk_index,
+                        "chunk_seq": chunk_seq,
                     },
                 )
             )
