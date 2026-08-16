@@ -21,6 +21,9 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 TOP_K = int(os.getenv("TOP_K", "5"))
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "3"))
+SPARSE_TOP_K = int(os.getenv("SPARSE_TOP_K", str(TOP_K)))
+ANCHOR_TOP_N = int(os.getenv("ANCHOR_TOP_N", "2"))
+ANCHOR_WINDOW = int(os.getenv("ANCHOR_WINDOW", "1"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "200"))
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "950"))
