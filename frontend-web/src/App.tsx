@@ -4,6 +4,7 @@ import type { View } from "@/components/layout/TopTabs";
 import { ConversationList } from "@/components/conversations/ConversationList";
 import { DocumentPanel } from "@/components/documents/DocumentPanel";
 import { ChatPage } from "@/pages/ChatPage";
+import { EvaluationPage } from "@/pages/EvaluationPage";
 import { useConversations } from "@/hooks/useConversations";
 import { useUiStore } from "@/store/uiStore";
 import { Toaster } from "@/components/ui/toast";
@@ -33,11 +34,7 @@ export default function App() {
         activeView={view}
         onViewChange={setView}
       >
-        {view === "chat" ? (
-          <ChatPage />
-        ) : (
-          <div className="p-6 text-sm text-muted-foreground">Evaluation view lands in Task 9.</div>
-        )}
+        {view === "chat" ? <ChatPage /> : <EvaluationPage />}
       </AppShell>
       <Toaster />
     </>
