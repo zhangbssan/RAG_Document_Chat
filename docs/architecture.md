@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the repository layout and the high-level RAG flow for RAG Document Chat.
+This document describes the repository layout and the high-level system architecture for RAG Document Chat.
 
 ## 1. Project Structure
 
@@ -12,9 +12,14 @@ RAG_Document_Chat/
 ├── docker-compose.yml
 ├── docs/
 │   ├── architecture.md
+│   ├── pdf-upload-workflow.md
+│   ├── query-workflow.md
+│   ├── agent-runtime-workflow.md
 │   └── screenshots/
 │       ├── .gitkeep
-│       └── evaluation_score.png
+│       ├── Chat_with_source.png
+│       ├── Evaluation_score.png
+│       └── Query_process.mov
 ├── sample_docs/
 │   ├── employee_handbook_de.pdf
 │   ├── employee_handbook_en.pdf
@@ -29,6 +34,13 @@ RAG_Document_Chat/
 │   ├── test_hybrid_search_merge.py
 │   ├── test_hybrid_vector_store.py
 │   ├── test_retriever_hybrid.py
+│   ├── test_agent_memory.py
+│   ├── test_agent_stream_events.py
+│   ├── test_conversation_api.py
+│   ├── test_conversation_schemas.py
+│   ├── test_conversation_store.py
+│   ├── test_current_turn_citations.py
+│   ├── test_persistent_agent_e2e.py
 │   ├── validate_pdf_extraction.py
 │   └── validate_setup.py
 ├── backend/
@@ -36,8 +48,9 @@ RAG_Document_Chat/
 │   ├── requirements.txt
 │   ├── data/
 │   │   ├── huggingface/
-│   │   └── uploads/
-│   │       └── .gitkeep
+│   │   ├── uploads/
+│   │   │   └── .gitkeep
+│   │   └── chat_history.sqlite
 │   ├── scripts/
 │   │   └── smoke_test_pdf_loader.py
 │   └── app/
@@ -47,11 +60,14 @@ RAG_Document_Chat/
 │       ├── api/
 │       │   ├── __init__.py
 │       │   ├── chat.py
+│       │   ├── conversations.py
 │       │   ├── documents.py
 │       │   ├── evaluation.py
 │       │   └── upload.py
 │       ├── agent/
 │       │   ├── chat_agent.py
+│       │   ├── conversation_store.py
+│       │   ├── runtime.py
 │       │   └── tools.py
 │       ├── data/
 │       │   └── test_cases.py
@@ -71,233 +87,204 @@ RAG_Document_Chat/
 │       └── utils/
 │           ├── __init__.py
 │           └── file_utils.py
-└── frontend/
-    ├── Dockerfile
-    ├── requirements.txt
-    └── app.py
+└── frontend-web/
+    ├── src/
+    │   ├── api/
+    │   ├── components/
+    │   ├── hooks/
+    │   ├── pages/
+    │   ├── store/
+    │   ├── types/
+    │   ├── App.tsx
+    │   └── main.tsx
+    ├── package.json
+    ├── vite.config.ts
+    ├── nginx.conf
+    └── Dockerfile
 ```
 
 ### Directory Overview
 
-- `backend/`: FastAPI backend service, including API routes, RAG pipeline modules, configuration, schemas, and utilities.
-- `backend/app/api/`: HTTP API endpoints for upload, chat, streaming chat, document management, and evaluation.
-- `backend/app/agent/`: LangChain tool-calling agent (`chat_agent.py`) and the `search_uploaded_docs` tool (`tools.py`) used by `POST /api/chat`.
+- `backend/`: FastAPI backend service, including API routes, Agent runtime, RAG pipeline modules, configuration, schemas, and utilities.
+- `backend/app/api/`: HTTP API endpoints for upload, chat (sync + streaming), conversation management, document management, and evaluation.
+- `backend/app/agent/`: The Agent Runtime and Tool Gateway — LangChain `create_agent` construction, LangGraph/SQLite lifecycle runtime, conversation metadata catalog, and the single `search_uploaded_docs` tool.
 - `backend/app/data/`: Hardcoded evaluation test cases.
-- `backend/app/rag/`: Core RAG implementation: PDF loading, chunking, embeddings, Milvus schema/storage (dense + native BM25 sparse), retrieval, reranking, prompts, generation, and evaluation scoring.
+- `backend/app/rag/`: Core RAG implementation — PDF loading, chunking, embeddings, Milvus schema/storage (dense + native BM25 sparse), hybrid retrieval, prompts, generation, and evaluation scoring. This is where the Agent's `search_uploaded_docs` tool and the no-key fallback both do their work.
 - `backend/app/utils/`: Shared backend helper code.
-- `backend/data/`: Runtime data directory for uploaded PDFs and Hugging Face model cache. Docker Compose mounts this directory into the backend container. Vector data is stored in Milvus, not on this local disk.
+- `backend/data/`: Runtime data — uploaded PDFs, Hugging Face model cache, and the default persistent chat SQLite file. Vector data is stored in Milvus.
 - `backend/scripts/`: Backend-specific smoke tests and helper scripts.
-- `frontend/`: Streamlit frontend application and Docker/dependency configuration.
+- `frontend-web/`: React (Vite + TypeScript) frontend — API client, hooks, components, pages, and Docker/nginx static-serve configuration.
 - `sample_docs/`: Sample PDFs used by the fixed retrieval evaluation benchmark.
-- `scripts/`: Project-level validation and RAG/PDF test scripts.
-- `docs/`: Architecture documentation and local run screenshots.
+- `scripts/`: Project-level validation and RAG/PDF/Agent test scripts.
+- `docs/`: Architecture documentation, per-workflow deep dives, and local run screenshots. `docs/superpowers/` additionally holds internal design specs and implementation plans that motivated each change; they are development history, not user-facing documentation.
 
 Generated Python caches, virtual environments, local screenshots, and model-cache files are intentionally not listed in detail.
 
-## 2. PDF Upload Workflow
+## 2. System Architecture
 
-Every node below names the exact file and function that implements that step.
+The chat path is a persistent LangChain Agent compiled by `create_agent`. LangGraph owns the model/tool execution cycle and checkpoints its message state to SQLite. The application does not hand-write an Agent loop — it adds lifecycle wiring, a single tool, conversation metadata, API serialization, and UI controls around that framework-owned graph.
 
-```mermaid
-flowchart TD
-    subgraph FE["Frontend — frontend/app.py"]
-        A["User selects PDF(s) in sidebar<br/>upload_pdfs()"]
-    end
+The architecture is organized into seven layers. Each one has a single, narrow responsibility, and every arrow below crosses exactly one layer boundary:
 
-    subgraph EP["FastAPI — backend/app/api/upload.py"]
-        B["POST /api/upload<br/>upload_pdfs()"]
-    end
-
-    subgraph UTIL["backend/app/utils/file_utils.py"]
-        C1["validate_pdf_filename()<br/>rejects non-.pdf names"]
-        C2["save_upload_file()<br/>writes raw bytes to UPLOAD_DIR<br/>(validate_upload_size() enforces MAX_UPLOAD_SIZE_MB)"]
-    end
-
-    subgraph LOADER["backend/app/rag/pdf_loader.py"]
-        D["pdf_extraction()<br/>PyMuPDF (fitz) page-by-page text<br/>+ md5 file_hash<br/>→ list[PageText]"]
-    end
-
-    subgraph VS1["backend/app/rag/vector_store.py"]
-        E["indexed_file_hashes()<br/>Milvus query for existing file_hash values"]
-    end
-
-    subgraph CHUNK["backend/app/rag/chunker.py"]
-        F["build_chunks_from_pages()<br/>→ chunk_text() → find_split_point()<br/>→ list[Chunk] (id, text, metadata incl. chunk_seq)"]
-    end
-
-    subgraph EMBED["backend/app/rag/embeddings.py"]
-        G["embed_texts()<br/>SentenceTransformer.encode()<br/>(EMBEDDING_MODEL, normalized)"]
-    end
-
-    subgraph SCHEMA["backend/app/rag/hybrid_schema.py"]
-        HS["build_realtime_pdf_schema()<br/>build_realtime_pdf_index_params()<br/>defines dense `embedding` field +<br/>BM25 Function → `sparse_vector` field"]
-    end
-
-    subgraph VS2["backend/app/rag/vector_store.py"]
-        H["add_chunks()<br/>MilvusClient.insert() + flush()<br/>(sparse_vector generated server-side<br/>from `text` by the BM25 Function)"]
-    end
-
-    MILVUS[("Milvus<br/>REALTIME_PDF_COLLECTION_NAME<br/>dense `embedding` + BM25 `sparse_vector`")]
-
-    A -->|"multipart POST"| B
-    B --> C1 --> C2 --> D
-    D --> E
-    E -->|"file_hash already indexed → skip"| B
-    E -->|"new file_hash"| F
-    F --> G --> H
-    HS -.->|"schema/index, created once<br/>via get_collection()"| MILVUS
-    H --> MILVUS
-    B -->|"UploadResponse(added_chunks, messages)<br/>backend/app/schemas.py"| A
-```
-
-Notes:
-- One upload request can contain multiple files; `upload_pdfs()` (`backend/app/api/upload.py`) loops per file, so a file that fails validation doesn't block the others.
-- Dedup is by MD5 `file_hash` of the raw PDF bytes, computed in `pdf_extraction()` (`backend/app/rag/pdf_loader.py`), checked against `indexed_file_hashes()` (`backend/app/rag/vector_store.py`) before chunking/embedding runs.
-- Chunk boundaries are page-scoped: `build_chunks_from_pages()` (`backend/app/rag/chunker.py`) never merges text across pages, which is what keeps page-level citations accurate.
-- Every chunk row is indexed twice for retrieval: `add_chunks()` writes the dense `embedding` vector directly, while Milvus computes the `sparse_vector` (BM25) field itself from the `text` field via a native `Function` defined in `hybrid_schema.py` — the backend never computes or inserts sparse vectors.
-
-### Step-by-Step Breakdown 
-
-Each block below corresponds to a node in the diagram above (A–H, plus the schema-definition module). The description explains what the code does and how that behavior contributes to the overall goal: indexing a PDF exactly once, split into citable, embeddable chunks that are retrievable by both dense and sparse (BM25) search.
-
-**A — `frontend/app.py::upload_pdfs()`**
-The Streamlit sidebar's file uploader collects one or more PDFs (`st.file_uploader(..., accept_multiple_files=True)`). On clicking "Start Indexing", `upload_pdfs()` re-packs each file as a `(filename, raw_bytes, "application/pdf")` tuple and sends a single `multipart/form-data POST` to `/api/upload` with a 300s timeout (large PDFs / cold embedding-model load can be slow). The frontend does no validation itself — every check happens server-side — so this block's only job is transport.
-
-**B — `backend/app/api/upload.py::upload_pdfs()`**
-This is the orchestrator for the whole workflow — every other block (C through H) is called from inside this one function. Its structure:
-1. Calls `indexed_file_hashes()` **once**, before the loop, to build an in-memory `set[str]` of hashes already in Milvus. Reusing one snapshot across all files in the request (rather than re-querying per file) is what makes duplicate-detection cheap for a multi-file upload.
-2. Loops over `files: list[UploadFile]`. For each file it validates the name, saves it, extracts text, checks the hash against the snapshot, chunks, embeds+inserts, and appends a human-readable status message (`✅`/`📄`/`⚠️`) — this is why a bad file doesn't abort the batch: exceptions from a single iteration would only need to be caught to skip that file, and the per-file `continue` statements do exactly that for the "already indexed" and "no extractable text" cases.
-3. Any unhandled exception in the whole block (e.g. a corrupt PDF `pdf_extraction()` can't open) is caught by the outer `try/except` and turned into an HTTP 400 — so it fails the *whole request*, not just one file, which is only a real risk for genuinely malformed uploads (not for duplicates or empty files, which are handled explicitly).
-4. Returns `UploadResponse(added_chunks, messages)` (`backend/app/schemas.py`), which the frontend renders as one `st.success()` line per file.
-
-**C1 — `backend/app/utils/file_utils.py::validate_pdf_filename()`**
-Takes the raw filename reported by the client and strips it down with `Path(filename).name`, which discards any directory component (defense against path traversal via a crafted filename like `../../etc/passwd.pdf`). It then rejects empty names and anything whose suffix isn't `.pdf` (case-insensitive). This is the first gate a file must pass — nothing is written to disk yet.
-
-**C2 — `backend/app/utils/file_utils.py::save_upload_file()` / `validate_upload_size()`**
-`save_upload_file()` re-validates the filename, calls `validate_upload_size()` (seeks to the end of the underlying `SpooledTemporaryFile` to get its size without reading it fully into memory, compares against `MAX_UPLOAD_SIZE_BYTES` from `config.py`, then seeks back to 0), ensures `UPLOAD_DIR` exists, and writes the raw bytes to `UPLOAD_DIR/<file_name>`. Note this **overwrites** any existing file with the same name on disk — the durable dedup guard is the Milvus `file_hash` check (block E), not the filename. The returned `Path` is what block D reads from.
-
-**D — `backend/app/rag/pdf_loader.py::pdf_extraction()`**
-Opens the saved file with PyMuPDF (`fitz.open`) and does two things per page: extracts plain text via `page.get_text()`, and computes an MD5 digest of the entire file's raw bytes once up front (`hashlib.md5(pdf_path.read_bytes())`) — the same hash is attached to every page, since the hash identifies the *document*, not the page. Pages whose extracted text is empty/whitespace-only are silently dropped (e.g. a scanned image page with no text layer), so the output `list[PageText]` may have fewer entries than the PDF has pages. Any PyMuPDF failure (corrupt file, encrypted PDF) is wrapped in a `ValueError` that propagates up to block B's `except` handler.
-
-**E — `backend/app/rag/vector_store.py::indexed_file_hashes()`**
-This is the dedup check. It calls `get_collection()` to obtain the (lazily created) `MilvusClient`, then issues a Milvus `query()` with an empty filter (`filter=""`, matching all rows) but only requesting the `file_hash` output field, capped at `limit=16384` rows. It reduces the result to a Python `set` via a comprehension — the set (not a list) matters because block B does an O(1) `in` check against it per file. Because `file_hash` is duplicated on every chunk row of a document, this query returns one row per *chunk*, not per document; the set comprehension collapses that back down to unique hashes. In `upload_pdfs()`, `pages[0].file_hash` (identical across all pages of that file) is compared against this set — if present, chunking/embedding/insertion (F, G, H) are skipped entirely for that file, which is the main cost-saving the whole workflow is built around: embeddings are the expensive step, so this check runs before them.
-
-**F — `backend/app/rag/chunker.py::build_chunks_from_pages()`**
-For each `PageText`, calls `chunk_text()` to split that page's text into overlapping windows (default `CHUNK_SIZE=950` chars, `CHUNK_OVERLAP=180` chars, from `config.py`). `chunk_text()` first normalizes whitespace (`normalize_text()`), then slides a window across the text; when a window would cut mid-sentence, `find_split_point()` looks backward from the window's end for the best available boundary — paragraph break, then line break, then sentence end (`". "`), then word boundary — as long as that boundary is past 55% of the window (`min_split`), to avoid tiny chunks. Because the outer loop is over pages (not the whole document), a chunk never spans two pages, so every chunk can be attributed to exactly one page number for citations. Each chunk gets a deterministic `id` (`"{file_hash}:p{page}:c{chunk_index}"`) and a `metadata` dict — `document_name`, `file_hash`, `page`, `chunk_index` (position within its page, resets at each page boundary), and `chunk_seq` (position within the whole document, monotonic across all pages of that upload) — that Milvus will later store as dynamic fields.
-
-**G — `backend/app/rag/embeddings.py::embed_texts()`**
-Loads the `SentenceTransformer` model named by `EMBEDDING_MODEL` (default `paraphrase-multilingual-MiniLM-L12-v2`, chosen for the German/English sample docs) once via `@lru_cache(maxsize=1)`, so repeated calls across the process's lifetime reuse the same model instance instead of reloading it from disk/Hugging Face cache. `model.encode(texts, normalize_embeddings=True)` runs a batched forward pass and L2-normalizes each output vector — normalization is what makes cosine similarity (used by block H's dense index) equivalent to a plain dot product at search time. Returns plain Python lists (`.tolist()`) since Milvus's client doesn't accept numpy arrays directly.
-
-**Schema — `backend/app/rag/hybrid_schema.py::build_realtime_pdf_schema()` / `build_realtime_pdf_index_params()`**
-Not a step in the per-upload flow, but the module that defines the collection block H creates the first time it's needed. `build_realtime_pdf_schema()` defines an auto-ID collection with `enable_dynamic_field=True` (so `document_name`/`file_hash`/`page`/`chunk_index`/`chunk_seq` ride along as dynamic fields, same as before), a `text` field with `enable_analyzer=True`, a dense `FLOAT_VECTOR` `embedding` field, and a `SPARSE_FLOAT_VECTOR` `sparse_vector` field that is never written to directly — it's populated by an attached Milvus-native `Function` (`text_bm25_emb`, `FunctionType.BM25`) that tokenizes `text` and derives the sparse vector server-side on insert. `build_realtime_pdf_index_params()` adds two indexes: `embedding` gets `AUTOINDEX`/`COSINE` (dense/semantic search), `sparse_vector` gets `AUTOINDEX`/`BM25` (sparse/keyword search) — the two indexes are what make the same collection usable for hybrid retrieval.
-
-**H — `backend/app/rag/vector_store.py::add_chunks()`**
-The final write step, and the second function in this file the workflow relies on. It short-circuits on an empty chunk list, otherwise:
-1. Calls `get_collection()` — on the very first call in the process, this is also where the Milvus collection is *created*: it probes the embedding dimension with a throwaway `embed_query("dimension probe")` call, then delegates schema and index construction to `build_realtime_pdf_schema()` / `build_realtime_pdf_index_params()` (`hybrid_schema.py`, see above) before calling `load_collection()` so it's queryable.
-2. Embeds all chunk texts in one batched call to `embed_texts()` (block G) rather than one call per chunk — this is why chunking happens before embedding rather than embedding page-by-page. Only the dense vector is computed here; the sparse vector is not.
-3. Zips each chunk with its dense vector into a row dict — `{"text": ..., "embedding": ..., **chunk.metadata}` — spreading `metadata` directly into the row is what populates the dynamic fields. There is no `sparse_vector` key in this dict; Milvus derives it from `text` at insert time via the schema's BM25 `Function`.
-4. `client.insert()` followed immediately by `client.flush()`. The explicit flush matters: Milvus inserts are buffered, and without flushing, a `query_chunks()`/`indexed_file_hashes()` call issued moments later (e.g. from the next file in the same upload batch, or the very next chat query) could miss the just-inserted rows. Flush trades a small amount of latency here for read-after-write consistency.
-5. Returns `len(chunks)`, which block B accumulates into `added_chunks` and reports as "Indexed N text clauses" per file.
-
-## 3. Query Workflow (Chat)
-
-Both chat paths below call the same hybrid retrieval core, `hybrid_search()` (`backend/app/rag/hybrid_search.py`) — dense + BM25 search, RRF fusion, dedup by chunk id, anchor selection, ±1 `chunk_seq` context assembly, and a citable link per block. Full design rationale: `docs/superpowers/specs/2026-08-16-hybrid-query-retrieval-design.md`. They differ in everything *around* retrieval:
-
-| | Entry point | Used when |
+| Layer | Responsibility | Code |
 | --- | --- | --- |
-| **A. Direct retrieval pipeline** | `POST /api/chat/stream` → `chat_stream()` | Default path — the Streamlit chat UI calls `stream_answer()` (`frontend/app.py`) for every message. Always retrieves. |
-| **B. Agent** | `POST /api/chat` → `chat()` | Fallback — `stream_answer()` falls back to `ask_question()` if the stream request fails; also the endpoint any direct API client hits. The LLM decides whether to call `search_uploaded_docs` at all. |
-
-### 3.1 Hybrid Retrieval Core (shared)
+| **Client** | Renders chat/upload UI, holds `conversation_id`, replays streamed events. | `frontend-web/src/` |
+| **API** | HTTP surface: request validation, response shaping, choosing the Agent path vs. the no-key fallback path. | `backend/app/api/*.py` |
+| **Agent Runtime** | Owns the compiled LangGraph graph, the SQLite checkpointer, and the conversation catalog. Builds a request-scoped Agent per turn and invokes/streams it. | `backend/app/agent/runtime.py`, `backend/app/agent/chat_agent.py` |
+| **Tool Gateway** | Turns a Python function into an LLM-callable tool: defines the model-visible schema, injects server-side context (user/session) that the model never sees or fills in. | `backend/app/agent/tools.py::make_search_tool()` |
+| **Tools** | The actual tool implementation(s) the Agent can invoke. Today there is exactly one: `search_uploaded_docs`. | `backend/app/agent/tools.py::_search_uploaded_docs_impl()` |
+| **Data Layer** | Framework/business logic that turns a tool call into a data operation: retrieval fusion, chunking, embedding, ingestion, conversation metadata queries. | `backend/app/rag/*.py`, `backend/app/agent/conversation_store.py` |
+| **Storage** | Durable systems of record. | Milvus, SQLite (`chat_history.sqlite`), local disk (`backend/data/uploads`), OpenAI (external LLM) |
 
 ```mermaid
-flowchart TD
-    Q["query"]
-
-    subgraph VS["backend/app/rag/vector_store.py"]
-        DENSE["query_chunks()<br/>embed_query() + ANN search on `embedding`"]
-        SPARSE["sparse_search()<br/>Milvus-native BM25 FTS on `sparse_vector`<br/>(no local embedding call)"]
-        FETCH["get_chunks_by_seq()<br/>fetch an anchor's ±window neighbours"]
+%%{init: {"themeVariables": {"fontSize": "18px"}, "flowchart": {"fontSize": 18, "nodeSpacing": 40, "rankSpacing": 55}}}%%
+flowchart TB
+    subgraph CLIENT["Client"]
+        UI["React UI (frontend-web)<br/>multi-conversation chat"]
     end
 
-    subgraph HS["backend/app/rag/hybrid_search.py"]
-        FUSE["_rrf_fuse()<br/>dedup by chunk id + Reciprocal Rank Fusion"]
-        ANCHOR["_select_anchors()<br/>top ANCHOR_TOP_N (default 2)"]
-        WIN["_anchor_windows()<br/>±ANCHOR_WINDOW chunk_seq, deduped per document"]
-        MERGE["_merge_intervals()<br/>merge overlapping/adjacent chunk_seq runs"]
-        TEXT["_merge_chunk_text()<br/>strip same-page overlap; join cross-page with a break"]
-        LINK["_citation_link()<br/>doc:&lt;file_hash&gt;#p&lt;start&gt;-&lt;end&gt;"]
+    subgraph API["API Layer (FastAPI)"]
+        UP["POST /api/upload"]
+        CHAT["POST /api/chat, /api/chat/stream"]
+        CONV["/api/conversations<br/>list · history · rename · delete"]
+        DOCS["/api/documents"]
+        EVAL["POST /api/evaluate"]
     end
 
-    MILVUS[("Milvus<br/>REALTIME_PDF_COLLECTION_NAME")]
+    subgraph RUNTIME["Agent Runtime"]
+        LIFE["AgentRuntime<br/>FastAPI lifespan singleton"]
+        AGENT["LangChain create_agent<br/>LangGraph model/tool loop<br/>bounded by recursion_limit"]
+    end
 
-    Q --> DENSE --> MILVUS
-    Q --> SPARSE --> MILVUS
-    DENSE --> FUSE
-    SPARSE --> FUSE
-    FUSE --> ANCHOR --> WIN --> FETCH --> MILVUS
-    FETCH --> MERGE --> TEXT --> LINK
-    LINK -->|"sorted list[context block]<br/>(text, score, metadata, link)"| OUT["hybrid_search() return value"]
+    subgraph GATEWAY["Tool Gateway"]
+        MAKE["make_search_tool()<br/>binds UserContext, exposes<br/>only `query` to the model"]
+    end
+
+    subgraph TOOLS["Tools"]
+        TOOL["search_uploaded_docs<br/>the Agent's only tool"]
+    end
+
+    subgraph DATA["Data Layer"]
+        RETRIEVE["hybrid_search()<br/>dense + BM25 + RRF + context windows"]
+        INGEST["pdf_loader → chunker → embeddings → vector_store"]
+        CATALOG["ConversationStore<br/>app_conversations catalog"]
+    end
+
+    subgraph STORAGE["Storage"]
+        SQLITE[("SQLite<br/>LangGraph checkpoints +<br/>app_conversations")]
+        MILVUS[("Milvus<br/>chunks + dense/BM25 indexes")]
+        DISK[("backend/data/uploads<br/>raw PDFs")]
+    end
+
+    subgraph EXTERNAL["External Services"]
+        OPENAI{{"OpenAI API<br/>gpt-4o-mini"}}
+    end
+
+    UI -->|"multipart PDF"| UP --> INGEST --> MILVUS
+    UP --> DISK
+    UI -->|"question + conversation_id"| CHAT --> LIFE
+    UI --> CONV --> LIFE
+    UI --> DOCS --> RETRIEVE
+    UI --> EVAL --> RETRIEVE
+    LIFE --> AGENT
+    LIFE <--> CATALOG --> SQLITE
+    AGENT <-->|"checkpoint load/save"| SQLITE
+    AGENT -->|"model calls the tool<br/>only when it decides to"| MAKE --> TOOL --> RETRIEVE --> MILVUS
+    AGENT -->|"chat completion"| OPENAI
 ```
 
-Anchors without a `chunk_seq` (pre-existing fixtures/chunks) skip the window/merge steps and become a single-chunk block built directly from the anchor — see `_anchor_to_row()`.
+The model can answer ordinary conversation directly or call `search_uploaded_docs` one or more times. There is no hand-written Agent loop: `create_agent`, the LangGraph runtime, and its recursion limit control model/tool execution. `POST /api/chat` exposes the same persistent Agent as a non-streaming API; the React UI uses `POST /api/chat/stream` to receive native Agent events.
 
-### 3.2 Path A — Direct Retrieval Pipeline
+If no OpenAI key exists, the endpoints retain a stateless retrieval/extractive fallback that calls into the Data Layer directly, bypassing the Agent Runtime and Tool Gateway entirely. Because no LLM graph runs in that mode, the streaming response explicitly warns that the turn is not saved to Agent memory.
+
+## 3. Sequence Diagram: A Chat Turn Across Layers
+
+This shows one `POST /api/chat/stream` turn as it crosses every layer above. It is the general shape; the full step-by-step (including the framework's internal model↔tool loop and SQLite checkpointing mechanics) is in [query-workflow.md](query-workflow.md) and [agent-runtime-workflow.md](agent-runtime-workflow.md).
 
 ```mermaid
-flowchart TD
-    U["User submits question<br/>frontend/app.py::render_chat()"] --> SA["stream_answer()"]
-    SA -->|"NDJSON POST"| EP1["POST /api/chat/stream<br/>backend/app/api/chat.py::chat_stream()"]
-    EP1 --> SS["retriever.py::search_sources()<br/>→ hybrid_search()"]
-    SS -->|"list[Source]"| EP1
-    EP1 --> AQS["generator.py::answer_question_stream()"]
-    AQS -->|"API key available"| OPENAI{{"OpenAI API (streaming)"}} --> EP1
-    AQS -->|"no key / API error"| FB["fallback_answer()"] --> EP1
-    EP1 -->|"NDJSON: sources → tokens → done"| SA
+sequenceDiagram
+    participant Client as Client<br/>(React frontend-web)
+    participant API as API Layer<br/>(chat.py)
+    participant Runtime as Agent Runtime<br/>(AgentRuntime + LangGraph)
+    participant Gateway as Tool Gateway<br/>(make_search_tool)
+    participant Tool as Tools<br/>(search_uploaded_docs)
+    participant Data as Data Layer<br/>(hybrid_search)
+    participant Storage as Storage<br/>(Milvus / SQLite)
+    participant LLM as External<br/>(OpenAI)
+
+    Client->>API: question + conversation_id
+    API->>Runtime: stream_chat(question, conversation_id)
+    Runtime->>Storage: load checkpoint for thread_id
+    Storage-->>Runtime: prior messages (or none)
+    Runtime->>LLM: model turn (history + question)
+    alt model decides a document lookup is needed
+        LLM-->>Runtime: tool call: search_uploaded_docs(query)
+        Runtime-->>Client: tool_start event
+        Runtime->>Gateway: dispatch tool call
+        Gateway->>Tool: search_uploaded_docs(query, user_context)
+        Tool->>Data: hybrid_search(query)
+        Data->>Storage: dense + BM25 search (Milvus)
+        Storage-->>Data: candidate chunks
+        Data-->>Tool: fused, anchor-expanded context blocks
+        Tool-->>Gateway: citations + content
+        Gateway-->>Runtime: ToolMessage
+        Runtime-->>Client: sources event
+        Runtime->>LLM: model turn (+ tool result)
+    else no document lookup is needed
+        Note over LLM: model answers directly
+    end
+    LLM-->>Runtime: final answer tokens
+    Runtime-->>Client: token events
+    Runtime->>Storage: durable checkpoint write
+    Runtime-->>Client: done event
 ```
 
-### 3.3 Path B — Agent
+## 4. Key Designs
 
-```mermaid
-flowchart TD
-    U2["ask_question()<br/>(stream-error fallback, or any direct /api/chat caller)"] -->|"JSON POST"| EP2["POST /api/chat<br/>backend/app/api/chat.py::chat()"]
-    EP2 --> RC["chat_agent.py::run_agent_chat()"]
-    RC --> CA["create_agent() + agent.invoke()<br/>LLM decides IF/WHEN to call the tool, max 3 calls"]
-    CA -->|"tool call chosen by the LLM"| ST["tools.py::search_uploaded_docs<br/>→ _search_uploaded_docs_impl()<br/>→ hybrid_search()"]
-    ST -->|"citations (incl. link, pages)"| CA
-    CA -->|"final AIMessage.content"| RC
-    RC -->|"ChatResponse(answer, sources)<br/>_citation_to_source() threads link/pages"| EP2 --> U2
-```
-
-Key differences between the two paths:
-- **Whether retrieval happens at all**: Path A always retrieves. Path B's agent can skip `search_uploaded_docs` entirely (small talk, general knowledge) — see `_SYSTEM_PROMPT` in `backend/app/agent/chat_agent.py`.
-- **Fallback without an OpenAI key**: Path A degrades to `fallback_answer()` (extractive excerpts). Path B has no such fallback — `run_agent_chat()` always constructs a `ChatOpenAI` client.
-- **Output shape**: Path A produces `Source` objects directly from `hybrid_search()` blocks. Path B produces tool citation dicts first (`_search_uploaded_docs_impl()`), which `_citation_to_source()` then converts to `Source` — same final fields (`document`, `page`, `pages`, `chunk`, `text`, `link`), `score` is always `None` on Path B since the tool's citation payload doesn't carry the block's RRF score.
+- **Framework-owned Agent execution.** `chat_agent.py::build_agent()` calls LangChain `create_agent`; `AgentRuntime` invokes or streams the compiled graph. The application does not reproduce the tool-call loop.
+- **Persistent thread memory.** Every request includes a UUID `conversation_id`, mapped directly to LangGraph's `thread_id`. `SqliteSaver` restores all prior messages for that thread after page refreshes and backend restarts.
+- **Multiple independent conversations.** A small `app_conversations` table stores only discoverability metadata (`id`, `title`, timestamps). Message truth remains in LangGraph checkpoints, so there is no second custom message store to synchronize.
+- **A search function is just another tool.** The Tool Gateway wraps `search_uploaded_docs` the same way any LangChain tool is wrapped — model-visible schema plus closure-captured server context. The model decides whether, and how many times, to call it; the application does not hardcode "always retrieve first."
+- **Current-turn citations.** API responses derive sources only from new `ToolMessage` objects produced during the current turn. History reconstruction associates persisted tool results with the following final assistant message.
+- **Native Agent streaming.** The stream endpoint consumes LangGraph `messages` and `updates` modes and emits NDJSON `tool_start`, `sources`, `token`, `done`, or `error` events.
+- **Bounded execution.** The graph recursion limit permits at most three tool rounds before returning a clear limit error.
+- **Shared SQLite file, separate ownership.** LangGraph manages checkpoint tables; application code owns only the prefixed `app_conversations` table. WAL mode and a busy timeout support both connections.
+- **Conversation deletion is complete.** Delete removes both catalog metadata and all LangGraph checkpoints for the thread.
+- **Retrieval remains shared.** The Agent tool and no-key fallback both use the same Data Layer — dense + BM25 retrieval core, RRF fusion, and anchor-window context assembly.
 
 ## Backend and Frontend Responsibilities
 
 ### Backend
 
-- Validates PDF uploads and file size limits.
-- Extracts page-level text from PDFs.
-- Builds overlapping chunks with document/page/chunk metadata.
-- Stores chunks in a Milvus collection.
-- Runs hybrid (dense + BM25) retrieval with RRF fusion and anchor/context assembly for both `/api/chat/stream` and `/api/chat` (see [Query Workflow](#3-query-workflow-chat)) — one shared retrieval core, `hybrid_search()`.
-- Runs a LangChain tool-calling agent for `/api/chat`, which decides whether to search the uploaded documents at all (Path B).
-- Generates answers with OpenAI when an API key is available.
-- Falls back to extractive answers when no API key is available (direct pipeline only — the agent path has no fallback).
+- Ingests PDFs and stores their chunks and indexes in Milvus.
+- Starts one process-scoped `AgentRuntime` and SQLite checkpointer during FastAPI lifespan startup.
+- Builds a request-scoped model/tool binding while reusing the process-scoped checkpointer.
+- Persists Agent messages by `conversation_id` and exposes conversation list/history/rename/delete APIs.
+- Streams native Agent progress and citations to the frontend.
+- Uses stateless extractive retrieval when no LLM key is available.
 
 ### Frontend
 
-- Provides PDF upload and document management UI.
-- Provides chat and streaming answer UI.
-- Shows source document, page, chunk, excerpt, and rank score.
-- Allows request-scoped OpenAI API key input.
-- Provides the fixed evaluation panel and missing-sample-document warning.
+- Generates UUIDs for new conversations and includes the active ID with every chat turn.
+- Lists, switches, renames, and deletes persisted conversations through backend APIs.
+- Restores message history when a conversation is selected or the page reloads.
+- Renders tool activity, incremental answer text, and current-turn sources.
+- Retains PDF upload/document management, request-scoped API key input, and evaluation UI.
 
 ## Storage
 
-- Uploaded PDFs are stored under `backend/data/uploads/`.
-- Chunk text, embeddings, and metadata are stored in Milvus (`MILVUS_HOST`/`MILVUS_PORT`, collection `REALTIME_PDF_COLLECTION_NAME`), which runs as its own service outside this repo's `docker-compose.yml`.
-- Hugging Face model cache is stored under `backend/data/huggingface/` in Docker.
-- Docker Compose mounts `backend/data/` into the backend container so uploaded files and the model cache survive container restarts.
+| Data | Location | Owner |
+| --- | --- | --- |
+| Raw uploaded PDFs | `backend/data/uploads/` | Upload API |
+| Chunks, embeddings, BM25 index, document metadata | Milvus | RAG storage layer |
+| Agent message/checkpoint state | `CHAT_DB_PATH` (default `backend/data/chat_history.sqlite`) | LangGraph `SqliteSaver` |
+| Conversation titles and timestamps | `app_conversations` in the same SQLite file | Application catalog |
+| Embedding model cache | `backend/data/huggingface/` | sentence-transformers |
+
+Docker Compose mounts `backend/data/` at `/app/data`, so the default SQLite database, uploaded PDFs, and model cache survive backend container recreation. Milvus remains an external service configured through `MILVUS_HOST` and `MILVUS_PORT`.
+
+## 5. Related Documents
+
+- [pdf-upload-workflow.md](pdf-upload-workflow.md) — deep dive into the PDF ingestion pipeline (workflow 1).
+- [query-workflow.md](query-workflow.md) — deep dive into a single chat turn: request/persistence model, framework-owned tool decision, streaming events, failure semantics (workflow 2).
+- [agent-runtime-workflow.md](agent-runtime-workflow.md) — deep dive into the Agent Runtime and Tool Gateway layers themselves: how a plain function becomes a callable tool, how the model/tool loop is bounded, and how SQLite gives the Agent multi-round memory (workflow 3).
