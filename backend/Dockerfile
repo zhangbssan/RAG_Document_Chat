@@ -12,7 +12,7 @@ RUN pip install --upgrade pip \
 
 COPY app ./app
 
-RUN mkdir -p /app/data/uploads /app/data/chroma
+RUN mkdir -p /app/data/uploads
 
 EXPOSE 8000
 

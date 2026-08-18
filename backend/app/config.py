@@ -9,9 +9,8 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", DATA_DIR / "uploads"))
-CHROMA_DIR = Path(os.getenv("CHROMA_DIR", DATA_DIR / "chroma"))
+CHAT_DB_PATH = Path(os.getenv("CHAT_DB_PATH", DATA_DIR / "chat_history.sqlite"))
 
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "pdf_chunks")
 EMBEDDING_MODEL = os.getenv(
     "EMBEDDING_MODEL",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",

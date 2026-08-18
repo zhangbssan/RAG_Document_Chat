@@ -25,7 +25,7 @@ def format_context(sources: list[Source]) -> str:
             f"Document: {source.document}\n"
             f"Page: {page_label}\n"
             f"{link_line}"
-            f"Clause: {source.chunk}\n"
+            f"Chunk: {source.chunk}\n"
             f"Content: {source.text}"
         )
     return "\n\n".join(blocks)

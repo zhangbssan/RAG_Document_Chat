@@ -56,7 +56,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)) -> UploadResponse:
             if file_hash:
                 known_hashes.add(file_hash)
 
-            messages.append(f"✅ {file_name}: Indexed {indexed_chunks} text clauses")
+            messages.append(f"✅ {file_name}: Indexed {indexed_chunks} text chunks")
     
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

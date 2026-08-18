@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class Source(BaseModel):
@@ -15,13 +17,64 @@ class Source(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str
-    top_k: int | None = None
+    conversation_id: str = Field(min_length=1, max_length=128)
+    top_k: int | None = Field(default=None, ge=1, le=20)
     openai_api_key: str | None = None
+
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conversation_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("conversation_id cannot be empty")
+        try:
+            return str(UUID(normalized))
+        except ValueError as exc:
+            raise ValueError("conversation_id must be a valid UUID") from exc
 
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+
+
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummary]
+
+
+class ConversationMessage(BaseModel):
+    role: str
+    content: str
+    sources: list[Source] = Field(default_factory=list)
+
+
+class ConversationHistoryResponse(BaseModel):
+    conversation: ConversationSummary
+    messages: list[ConversationMessage]
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("title cannot be empty")
+        return normalized
+
+
+class ConversationDeleteResponse(BaseModel):
+    conversation_id: str
+    deleted: bool
 
 
 class UploadResponse(BaseModel):
@@ -41,6 +94,4 @@ class DocumentListResponse(BaseModel):
     total_chunks: int
     total_documents: int
     documents: list[str]
-
-
 

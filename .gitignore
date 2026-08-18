@@ -2,11 +2,13 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-.env.example
+.env
 !backend/data/
 !backend/app/data/**
 !backend/data/uploads/.gitkeep
-!backend/data/chroma/.gitkeep
 data/huggingface/
 backend/data/huggingface/
 **/data/huggingface/
+backend/data/*.sqlite
+backend/data/*.sqlite-shm
+backend/data/*.sqlite-wal

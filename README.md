@@ -9,9 +9,7 @@ It is designed for business-style PDF documents such as agreements, manuals, han
 Chat is a persistent, multi-conversation LangChain Agent. LangGraph manages its model/tool execution and stores thread memory in SQLite; the Agent decides when to call its single `search_uploaded_docs` tool. The evaluation feature remains a fixed retrieval benchmark for the included sample documents.
 
 For the detailed repository structure and high-level RAG flow diagram, see `docs/architecture.md`.
-Local run example screenshots are stored in `docs/screenshots/`, including the evaluation example screenshot and a short local demo recording.
-
-A public demo is available here: [Cloud Run Demo](https://ragdocumentchatfrontend-710350614808.europe-west1.run.app/). The demo is intended for quick testing; it may still be running the previous Streamlit frontend until redeployed. For the most reliable local setup, use Docker Compose as described below.
+Frontend page screenshot is available in `docs/screenshots/`.
 
 ## Architecture
 

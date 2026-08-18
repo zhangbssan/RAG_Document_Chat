@@ -1687,7 +1687,7 @@ git commit -m "evaluator.py/generator.py/frontend: thread merged page ranges and
 
 **Interfaces:** None — documentation only, no code interfaces.
 
-- [ ] **Step 1: Replace `docs/architecture.md`'s `## 3. Query Workflow (Chat)` section**
+- [x] **Step 1: Replace `docs/architecture.md`'s `## 3. Query Workflow (Chat)` section**
 
 Find the section starting at `## 3. Query Workflow (Chat)` and ending right before `## Backend and Frontend Responsibilities`. Replace the entire section with:
 
@@ -1768,7 +1768,7 @@ Key differences between the two paths:
 - **Output shape**: Path A produces `Source` objects directly from `hybrid_search()` blocks. Path B produces tool citation dicts first (`_search_uploaded_docs_impl()`), which `_citation_to_source()` then converts to `Source` — same final fields (`document`, `page`, `pages`, `chunk`, `text`, `link`), `score` is always `None` on Path B since the tool's citation payload doesn't carry the block's RRF score.
 ```
 
-- [ ] **Step 2: Update `docs/architecture.md`'s "## Backend and Frontend Responsibilities" → "### Backend" bullets**
+- [x] **Step 2: Update `docs/architecture.md`'s "## Backend and Frontend Responsibilities" → "### Backend" bullets**
 
 Find:
 ```markdown
@@ -1781,7 +1781,7 @@ Replace with:
 - Runs a LangChain tool-calling agent for `/api/chat`, which decides whether to search the uploaded documents at all (Path B).
 ```
 
-- [ ] **Step 3: Update `ARCHITECTURE.md`**
+- [x] **Step 3: Update `ARCHITECTURE.md`**
 
 Replace line 9-10:
 ```
@@ -1837,7 +1837,7 @@ with:
 | `backend/app/rag/hybrid_search.py` | Dense+BM25 RRF fusion, dedup, anchor selection, ±1 chunk_seq context assembly, citation links |
 ```
 
-- [ ] **Step 4: Update `README.md`**
+- [x] **Step 4: Update `README.md`**
 
 Replace line 7:
 ```
@@ -1905,7 +1905,7 @@ Each block is passed to the answer generator and shown as a source in the UI, wi
 Displayed source scores are RRF fusion scores from the hybrid retrieval step. They are not similarity percentages.
 ```
 
-- [ ] **Step 5: Verify no stale references remain**
+- [x] **Step 5: Verify no stale references remain**
 
 ```bash
 cd /Users/baoshuangzhang/Desktop/Agentic_RAG/agentic_rag/00_RAG_Document_Chat
@@ -1913,7 +1913,7 @@ grep -rn "reranker\|RERANK_TOP_K\|lexical overlap" docs/architecture.md ARCHITEC
 ```
 Expected: no output.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/baoshuangzhang/Desktop/Agentic_RAG/agentic_rag/00_RAG_Document_Chat

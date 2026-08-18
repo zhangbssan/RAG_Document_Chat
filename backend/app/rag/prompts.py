@@ -12,12 +12,12 @@ Strict grounding rules:
 3. Do not infer facts that are not explicitly supported by the context.
 4. If the context is insufficient, say the uploaded documents do not contain enough information to answer.
 5. Cite every factual claim with one of the provided source markers.
-6. Do not invent document names, page numbers, clauses, or citations.
+6. Do not invent document names, page numbers, chunks, or citations.
 7. Keep answers concise, structured, and limited to what the retrieved context supports.
 
 Citation format:
 - Use only source markers that appear in the context.
-- Source marker format: [document-Ppage-Sclause]
+- Source marker format: [document-Ppage-Schunk]
 """
 
 # Question analysis prompt
@@ -46,7 +46,7 @@ Instructions:
 - Do not assume or add facts not present in the context.
 - Cite every factual claim with source markers copied exactly from the context.
 - If the context does not contain enough information, clearly state that the uploaded documents do not contain enough information to answer.
-- Do not invent citations, document names, page numbers, or clauses.
+- Do not invent citations, document names, page numbers, or chunks.
 - Keep the answer concise and structured.
 
 Suggested format:
@@ -63,7 +63,7 @@ Text: {text}
 Source metadata:
 - Document: {document}
 - Page: {page}
-- Clause: {chunk}
+- Chunk: {chunk}
 
 Generate standardized citation format: [{document}-P{page}-S{chunk}]"""
 
@@ -78,7 +78,7 @@ Possible reasons:
 Suggestions:
 1. Try rephrasing your question with different keywords
 2. Upload other PDF files containing relevant information
-3. Check if documents are properly indexed (see "Total text clauses" on the left sidebar)
+3. Check if documents are properly indexed (see "Total Text Chunks" on the left sidebar)
 """
 
 # Collection/Sources formatting
@@ -90,7 +90,7 @@ RESPONSE_TEMPLATE_SINGLE_SOURCE = """**Answer:** {answer}
 **Source Information:**
 - Document: {document}
 - Page: {page}
-- Clause: {chunk}
+- Chunk: {chunk}
 - Rank score: {score:.4f}
 """
 
@@ -100,7 +100,7 @@ RESPONSE_TEMPLATE_MULTIPLE_SOURCES = """**Answer:** {answer}
 {sources_list}
 """
 
-SOURCE_ITEM_TEMPLATE = """- **{document}** (page {page}, clause {chunk}, rank score {score:.4f})
+SOURCE_ITEM_TEMPLATE = """- **{document}** (page {page}, chunk {chunk}, rank score {score:.4f})
   > {excerpt}
 """
 
@@ -111,8 +111,8 @@ ERROR_NO_DOCUMENTS = "No documents have been indexed yet. Please upload PDF file
 
 # Instructions for LLM
 CITATION_INSTRUCTION = """Important: Every factual claim must include a source citation copied from the provided context.
-Use only existing source markers. Do not invent document names, page numbers, clauses, or citations.
-Format: [document-Ppage-Sclause]
+Use only existing source markers. Do not invent document names, page numbers, chunks, or citations.
+Format: [document-Ppage-Schunk]
 If the provided context is insufficient, say the uploaded documents do not contain enough information to answer.
 """
 
