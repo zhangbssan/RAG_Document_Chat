@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import type { View } from "@/components/layout/TopTabs";
 import { ConversationList } from "@/components/conversations/ConversationList";
+import { DocumentPanel } from "@/components/documents/DocumentPanel";
 import { ChatPage } from "@/pages/ChatPage";
 import { useConversations } from "@/hooks/useConversations";
 import { useUiStore } from "@/store/uiStore";
+import { Toaster } from "@/components/ui/toast";
+import { Separator } from "@/components/ui/separator";
 
 export default function App() {
   const [view, setView] = useState<View>("chat");
@@ -18,18 +21,25 @@ export default function App() {
   }, [conversations, activeConversationId, setActiveConversationId]);
 
   return (
-    <AppShell
-      sidebar={
-        <ConversationList onNewChat={() => setActiveConversationId(crypto.randomUUID())} />
-      }
-      activeView={view}
-      onViewChange={setView}
-    >
-      {view === "chat" ? (
-        <ChatPage />
-      ) : (
-        <div className="p-6 text-sm text-muted-foreground">Evaluation view lands in Task 9.</div>
-      )}
-    </AppShell>
+    <>
+      <AppShell
+        sidebar={
+          <div className="flex flex-col gap-4">
+            <ConversationList onNewChat={() => setActiveConversationId(crypto.randomUUID())} />
+            <Separator />
+            <DocumentPanel />
+          </div>
+        }
+        activeView={view}
+        onViewChange={setView}
+      >
+        {view === "chat" ? (
+          <ChatPage />
+        ) : (
+          <div className="p-6 text-sm text-muted-foreground">Evaluation view lands in Task 9.</div>
+        )}
+      </AppShell>
+      <Toaster />
+    </>
   );
 }
