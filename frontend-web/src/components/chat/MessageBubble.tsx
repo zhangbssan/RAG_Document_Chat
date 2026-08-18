@@ -1,9 +1,25 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { ToolStatusPill } from "./ToolStatusPill";
 import { CitationCard } from "./CitationCard";
 import type { Source } from "@/types";
+
+// The model cites sources with markdown links to our internal "doc:<hash>#p<page>"
+// reference scheme, which no viewer route resolves yet -- render those as plain
+// text instead of a dead link. Real http(s) links, if any ever appear, still work.
+const markdownComponents: Components = {
+  a({ href, children, ...props }) {
+    if (href?.startsWith("doc:")) {
+      return <span className="text-muted-foreground">{children}</span>;
+    }
+    return (
+      <a href={href} target="_blank" rel="noreferrer" {...props}>
+        {children}
+      </a>
+    );
+  },
+};
 
 export interface MessageBubbleProps {
   role: "user" | "assistant";
@@ -29,7 +45,9 @@ export function MessageBubble({ role, content, sources = [], toolQuery, notice, 
       >
         {notice && <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">{notice}</p>}
         <div className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{error ? `❌ ${error}` : content || " "}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {error ? `❌ ${error}` : content || " "}
+          </ReactMarkdown>
         </div>
       </div>
       {sources.length > 0 && (

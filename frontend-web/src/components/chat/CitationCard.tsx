@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { Link } from "lucide-react";
 import type { Source } from "@/types";
 
 interface CitationCardProps {
@@ -25,14 +25,12 @@ export function CitationCard({ source, index }: CitationCardProps) {
       </div>
       <blockquote className="border-l-2 border-border pl-2 text-muted-foreground">{excerpt}</blockquote>
       {source.link && (
-        <a
-          href={source.link}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-1 flex items-center gap-1 text-primary hover:underline"
-        >
-          <ExternalLink className="h-3 w-3" /> {source.link}
-        </a>
+        // Not a real navigable URL yet (internal "doc:<hash>#p<page>" reference,
+        // no viewer route resolves it) -- shown as plain text, not a link, to
+        // avoid an inert click that opens and immediately closes a blank tab.
+        <span className="mt-1 flex items-center gap-1 text-muted-foreground">
+          <Link className="h-3 w-3" /> {source.link}
+        </span>
       )}
     </div>
   );
