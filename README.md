@@ -228,19 +228,24 @@ Current API routes:
 
 Current limitations:
 
-- Text-based PDFs only. OCR is not implemented.
-- Table extraction is limited to whatever text PyMuPDF extracts.
-- Persistent chat currently targets one backend process using a local SQLite file. Multi-worker or multi-replica deployment requires a shared checkpointer/database strategy.
-- Page-level citation can still be imperfect for some PDFs because PDF text extraction and chunk boundaries may not always align exactly with the expected page-level answer location.
-- The evaluation includes page-level scoring as a strict diagnostic signal. In some cases, the retriever may find the correct document but not the exact expected page.
-- The evaluation benchmark is fixed to the sample documents and should not be interpreted as a general benchmark for arbitrary PDFs.
-- A public Cloud Run demo is available for quick testing, but Docker Compose is the recommended setup for reliable local use.
+- Only text-based PDFs are supported. Scanned documents require OCR before they can be searched.
+- Table extraction is limited to the text structure produced by PyMuPDF; complex tables may lose their row and column relationships.
+- Citation metadata identifies the source document and page range, but the frontend does not yet open the original PDF at the cited passage or highlight the exact sentence.
+- Conversation memory currently uses a local SQLite file and is designed for a single backend process. Multiple workers or replicas require a shared production checkpointer and conversation catalog.
+- The application has no authentication or per-user document isolation. Uploaded documents share one Milvus collection, so the current setup is intended for local or trusted single-user use.
+- Long conversations are persisted, but automatic context summarization and old Tool-result pruning are not enabled yet. A sufficiently long thread can eventually exceed the model context window.
+- Milvus is an external prerequisite in the current Docker Compose setup; users must run a compatible Milvus service separately and configure `MILVUS_HOST` and `MILVUS_PORT`.
+- The fixed evaluation benchmark covers only the included sample documents and measures retrieval signals, not general answer quality for arbitrary PDFs.
+- No hosted public demo is currently provided. Run the application locally using the documented development or Docker setup.
 
 Possible improvements:
 
 - OCR support for scanned PDFs.
 - Better table-aware extraction and chunking.
-- Production shared persistence and authentication for multi-user deployment.
+- A PDF.js-based source viewer that opens the cited page and highlights the referenced passage.
+- LangChain summarization and context-editing middleware for long-running conversations.
+- Authentication, per-user document collections, and access control.
+- A shared production checkpointer/database for multi-worker deployments.
+- An all-in-one Docker Compose setup including Milvus, etcd, MinIO, backend, and frontend.
 - Stronger reranking with a cross-encoder.
-- More evaluation cases and answer-quality evaluation.
-- Public deployment with persistent storage and authentication.
+- Broader retrieval test coverage and answer-quality evaluation.
