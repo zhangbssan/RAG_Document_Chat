@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import type { View } from "@/components/layout/TopTabs";
 import { ConversationList } from "@/components/conversations/ConversationList";
+import { ChatPage } from "@/pages/ChatPage";
 import { useConversations } from "@/hooks/useConversations";
 import { useUiStore } from "@/store/uiStore";
 
@@ -25,9 +26,7 @@ export default function App() {
       onViewChange={setView}
     >
       {view === "chat" ? (
-        <div className="p-6 text-sm text-muted-foreground">
-          Selected conversation: {activeConversationId ?? "none"}. Message list lands in Task 6.
-        </div>
+        <ChatPage />
       ) : (
         <div className="p-6 text-sm text-muted-foreground">Evaluation view lands in Task 9.</div>
       )}
