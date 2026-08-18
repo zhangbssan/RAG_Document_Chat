@@ -5,6 +5,9 @@ __pycache__/
 .env
 !backend/data/
 !backend/app/data/**
+backend/app/data/**/__pycache__/
+backend/app/data/**/*.py[cod]
+backend/data/uploads/*
 !backend/data/uploads/.gitkeep
 data/huggingface/
 backend/data/huggingface/
