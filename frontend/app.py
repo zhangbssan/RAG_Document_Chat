@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import time
+import uuid
 
 import requests
 import streamlit as st
@@ -64,10 +65,15 @@ def delete_document(file_hash: str) -> dict:
     return response.json()
 
 
-def _chat_payload(question: str, openai_api_key: str | None = None) -> dict:
+def _chat_payload(
+    question: str,
+    conversation_id: str,
+    openai_api_key: str | None = None,
+) -> dict:
     """Build a chat request payload without persisting request-only secrets."""
     payload = {
         "question": question,
+        "conversation_id": conversation_id,
         "top_k": 5,
     }
     if openai_api_key:
@@ -77,29 +83,50 @@ def _chat_payload(question: str, openai_api_key: str | None = None) -> dict:
 
 def ask_question(
     question: str,
-    use_stream: bool = False,
+    conversation_id: str,
     openai_api_key: str | None = None,
-) -> dict | None:
+) -> dict:
     """
-    Ask a question.
-    
+    Ask a question via the agent-backed chat endpoint.
+
     Args:
         question: User question
-        use_stream: Whether to use streaming endpoint
-        
+
     Returns:
-        Response dict with answer and sources, or None if streaming
+        Response dict with answer and sources
     """
-    if use_stream:
-        return None  # Streaming handled separately
-    
     response = requests.post(
         api_url("/api/chat"),
-        json=_chat_payload(question, openai_api_key),
+        json=_chat_payload(question, conversation_id, openai_api_key),
         timeout=300
     )
     response.raise_for_status()
     return response.json()
+
+
+def stream_answer(
+    question: str,
+    conversation_id: str,
+    openai_api_key: str | None = None,
+):
+    """Stream Agent events for one persistent conversation turn."""
+    try:
+        response = requests.post(
+            api_url("/api/chat/stream"),
+            json=_chat_payload(question, conversation_id, openai_api_key),
+            timeout=300,
+            stream=True,
+        )
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                yield json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError:
+                continue
+    except Exception as exc:
+        yield {"type": "error", "data": f"Stream processing failed: {str(exc)}"}
 
 
 def run_evaluation() -> dict:
@@ -109,46 +136,71 @@ def run_evaluation() -> dict:
     return response.json()
 
 
-def stream_answer(question: str, openai_api_key: str | None = None):
-    """Stream answer chunks from the backend."""
-    try:
-        response = requests.post(
-            api_url("/api/chat/stream"),
-            json=_chat_payload(question, openai_api_key),
-            timeout=300,
-            stream=True,
-        )
-        response.raise_for_status()
-        
-        sources = []
-        
-        for line in response.iter_lines():
-            if not line:
-                continue
+def get_conversations() -> list[dict]:
+    response = requests.get(api_url("/api/conversations"), timeout=30)
+    response.raise_for_status()
+    return response.json().get("conversations", [])
 
-            # New backend format: application/x-ndjson
-            data_line = line
 
-            # Backward compatibility for the previous SSE-style stream.
-            if line.startswith(b"data: "):
-                data_line = line[6:]
+def get_conversation_history(conversation_id: str) -> dict:
+    response = requests.get(
+        api_url(f"/api/conversations/{conversation_id}/messages"),
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
 
+
+def rename_chat_conversation(conversation_id: str, title: str) -> dict:
+    response = requests.patch(
+        api_url(f"/api/conversations/{conversation_id}"),
+        json={"title": title},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def delete_chat_conversation(conversation_id: str) -> dict:
+    response = requests.delete(
+        api_url(f"/api/conversations/{conversation_id}"),
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def start_new_conversation() -> None:
+    st.session_state.current_conversation_id = str(uuid.uuid4())
+    st.session_state.messages = []
+
+
+def refresh_conversations() -> None:
+    st.session_state.conversations = get_conversations()
+
+
+def load_conversation(conversation_id: str) -> None:
+    history = get_conversation_history(conversation_id)
+    st.session_state.current_conversation_id = conversation_id
+    st.session_state.messages = history.get("messages", [])
+
+
+def initialize_conversations() -> None:
+    if "conversations" not in st.session_state:
+        try:
+            refresh_conversations()
+        except Exception:
+            st.session_state.conversations = []
+
+    if "current_conversation_id" not in st.session_state:
+        conversations = st.session_state.get("conversations", [])
+        if conversations:
             try:
-                data = json.loads(data_line.decode("utf-8"))
-
-                if data.get("type") == "sources":
-                    sources = data.get("data", [])
-                elif data.get("type") in {"token", "content"}:
-                    yield ("content", data.get("data", ""))
-                elif data.get("type") == "done":
-                    yield ("done", None)
-                    yield ("sources", sources)
-
-            except json.JSONDecodeError:
-                continue
-    
-    except Exception as e:
-        yield ("error", f"Stream processing failed: {str(e)}")
+                load_conversation(conversations[0]["id"])
+            except Exception:
+                start_new_conversation()
+        else:
+            start_new_conversation()
 
 
 # ==================== UI Components ====================
@@ -157,6 +209,64 @@ def stream_answer(question: str, openai_api_key: str | None = None):
 def render_sidebar() -> str | None:
     """Render sidebar with document management."""
     with st.sidebar:
+        st.header("💬 Conversations")
+        if st.button("＋ New chat", type="primary", use_container_width=True):
+            start_new_conversation()
+            st.rerun()
+
+        conversations = st.session_state.get("conversations", [])
+        current_id = st.session_state.get("current_conversation_id")
+        if conversations:
+            for conversation in conversations:
+                conversation_id = conversation["id"]
+                title = conversation.get("title") or "Untitled conversation"
+                columns = st.columns([5, 1])
+                with columns[0]:
+                    label = f"● {title}" if conversation_id == current_id else title
+                    if st.button(
+                        label,
+                        key=f"select_conversation_{conversation_id}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            load_conversation(conversation_id)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to load conversation: {exc}")
+                with columns[1]:
+                    if st.button("×", key=f"delete_conversation_{conversation_id}"):
+                        try:
+                            delete_chat_conversation(conversation_id)
+                            refresh_conversations()
+                            if conversation_id == current_id:
+                                remaining = st.session_state.conversations
+                                if remaining:
+                                    load_conversation(remaining[0]["id"])
+                                else:
+                                    start_new_conversation()
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Failed to delete conversation: {exc}")
+        else:
+            st.caption("Start a new chat to create your first saved conversation.")
+
+        if current_id and any(item["id"] == current_id for item in conversations):
+            with st.expander("Rename current chat"):
+                current = next(item for item in conversations if item["id"] == current_id)
+                new_title = st.text_input(
+                    "Conversation title",
+                    value=current.get("title", ""),
+                    key=f"rename_title_{current_id}",
+                )
+                if st.button("Save title", key=f"rename_button_{current_id}"):
+                    try:
+                        rename_chat_conversation(current_id, new_title)
+                        refresh_conversations()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Failed to rename conversation: {exc}")
+
+        st.divider()
         st.header("📁 Document Management")
         
         # Backend connection info
@@ -206,7 +316,7 @@ def render_sidebar() -> str | None:
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Total Text Clauses", document_list.get("total_chunks", 0))
+                st.metric("Total Text Chunks", document_list.get("total_chunks", 0))
             with col2:
                 st.metric("Indexed Documents", document_list.get("total_documents", 0))
             
@@ -223,7 +333,7 @@ def render_sidebar() -> str | None:
                     cols = st.columns([4, 1])
                     with cols[0]:
                         st.caption(
-                            f"📄 {document_name} | Pages: {pages} | Clauses: {chunks}"
+                            f"📄 {document_name} | Pages: {pages} | Chunks: {chunks}"
                         )
                     with cols[1]:
                         if st.button(
@@ -236,7 +346,7 @@ def render_sidebar() -> str | None:
                                 result = delete_document(file_hash)
                                 st.session_state.document_delete_message = (
                                     f"Deleted {result.get('document_name', document_name)} "
-                                    f"({result.get('deleted_chunks', 0)} clauses)."
+                                    f"({result.get('deleted_chunks', 0)} chunks)."
                                 )
                                 st.rerun()
                             except Exception as exc:
@@ -248,11 +358,6 @@ def render_sidebar() -> str | None:
             st.warning(f"⚠️ Failed to get statistics: {e}")
         
         st.divider()
-        
-        # Clear chat
-        if st.button("🗑️ Clear Chat", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
         
         # About section
         st.divider()
@@ -294,7 +399,7 @@ def render_source_items(sources: list[dict]) -> None:
                 st.markdown(
                     f"**Source {i}:** {source['document']} | "
                     f"Page {page_label} | "
-                    f"Clause {source['chunk']}"
+                    f"Chunk {source['chunk']}"
                 )
             with cols[1]:
                 if source.get("score") is not None:
@@ -340,36 +445,35 @@ def render_chat(openai_api_key: str | None = None) -> None:
         with st.chat_message("assistant", avatar="🤖"):
             message_placeholder = st.empty()
             sources_placeholder = st.empty()
+            status_placeholder = st.empty()
             
             try:
-                # Stream the response
                 full_response = ""
                 sources = []
-                
                 with st.spinner("⏳ Thinking..."):
-                    for event_type, event_data in stream_answer(
+                    for event in stream_answer(
                         prompt,
+                        conversation_id=st.session_state.current_conversation_id,
                         openai_api_key=openai_api_key,
                     ):
-                        if event_type == "content":
-                            full_response += event_data
-                            message_placeholder.markdown(full_response + "▌")
+                        event_type = event.get("type")
+                        if event_type == "tool_start":
+                            query = event.get("query", "")
+                            status_placeholder.info(f"🔎 Searching uploaded documents: {query}")
                         elif event_type == "sources":
-                            sources = event_data
+                            sources = event.get("data", [])
+                            status_placeholder.success(f"Found {len(sources)} source block(s)")
+                        elif event_type == "token":
+                            full_response += event.get("data", "")
+                            message_placeholder.markdown(full_response + "▌")
+                        elif event_type == "notice":
+                            status_placeholder.warning(event.get("data", ""))
                         elif event_type == "error":
-                            # Fallback: use regular endpoint if streaming fails
-                            try:
-                                result = ask_question(
-                                    prompt,
-                                    use_stream=False,
-                                    openai_api_key=openai_api_key,
-                                )
-                                full_response = result["answer"]
-                                sources = result.get("sources", [])
-                            except Exception as fallback_error:
-                                full_response = f"❌ Error: {event_data}"
-                
-                # Final render without cursor
+                            full_response = f"❌ {event.get('data', 'Agent request failed')}"
+                            status_placeholder.empty()
+                        elif event_type == "done":
+                            status_placeholder.empty()
+
                 message_placeholder.markdown(full_response)
                 
                 # Display sources if any
@@ -383,6 +487,10 @@ def render_chat(openai_api_key: str | None = None) -> None:
                     "content": full_response,
                     "sources": sources,
                 })
+                try:
+                    refresh_conversations()
+                except Exception:
+                    pass
             
             except Exception as exc:
                 error_message = f"❌ Request processing failed: {str(exc)}"
@@ -518,6 +626,7 @@ def render_evaluation_panel() -> None:
 def main() -> None:
     """Main application entry point."""
     setup_page()
+    initialize_conversations()
     openai_api_key = render_sidebar()
     chat_tab, evaluation_tab = st.tabs(["Chat", "Evaluation"])
     with chat_tab:
