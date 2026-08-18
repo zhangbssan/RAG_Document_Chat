@@ -39,7 +39,7 @@ export function MessageBubble({ role, content, sources = [], toolQuery, notice, 
       <div
         className={cn(
           "max-w-[75%] rounded-lg px-4 py-3 text-sm",
-          isUser ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
+          isUser ? "bg-secondary text-secondary-foreground" : "bg-muted text-foreground",
           error && "border border-destructive text-destructive"
         )}
       >
