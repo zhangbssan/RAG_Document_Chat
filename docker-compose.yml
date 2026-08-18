@@ -6,9 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      CHROMA_DIR: /app/data/chroma
       UPLOAD_DIR: /app/data/uploads
       HF_HOME: /app/data/huggingface
+      CHAT_DB_PATH: /app/data/chat_history.sqlite
       TOP_K: "5"
       PYTHONUNBUFFERED: "1"
       PORT: "8000"
@@ -43,4 +43,17 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    restart: unless-stopped
+
+  frontend-web:
+    build:
+      context: ./frontend-web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
